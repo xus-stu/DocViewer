@@ -205,6 +205,7 @@ DV.SettingsUI = (function () {
     els.setSoftWrap.checked = s.rtfSoftWrap !== false;
     els.setRtfFont.checked = s.rtfReaderFont !== false;
     els.setPersist.checked = s.rememberSession !== false;
+    els.setScroll.checked = s.rememberScroll !== false;
     els.setShowTitlebar.checked = s.showTitlebar !== false;
     // 所有分段控件（语言 / 动画 / 速度 / 帧率）统一刷新选中标识
     DV.$$('.seg[data-key]').forEach(host => {
@@ -241,10 +242,14 @@ DV.SettingsUI = (function () {
   function updateFpsNote() {
     if (!els.fpsNote || !DV.frames) return;
     const i = DV.frames.info();
-    const cap = i.cap ? i.cap + ' fps' : '不限';
-    els.fpsNote.textContent = '帧率上限 ' + cap + ' · 动画实测 ' + i.animFps.toFixed(0) +
-      ' fps · 渲染实测 ' + i.renderFps.toFixed(0) + ' fps · 平均 ' + i.frameMs.toFixed(1) + ' ms/帧' +
-      (i.dropped ? ' · 超时帧 ' + i.dropped : '');
+    const cap = i.cap ? i.cap + ' fps' : DV.t('不限');
+    els.fpsNote.textContent = DV.t('帧率上限 {cap} · 渲染实测 {render} fps · 动画实测 {anim} fps · 平均 {ms} ms/帧{drop}', {
+      cap: cap,
+      render: i.renderFps.toFixed(0),
+      anim: i.animFps.toFixed(0),
+      ms: i.frameMs.toFixed(1),
+      drop: i.dropped ? DV.t(' · 超时帧 {n}', { n: i.dropped }) : '',
+    });
   }
 
   /* ---------------- 沉浸式阅读 ---------------- */
@@ -301,7 +306,7 @@ DV.SettingsUI = (function () {
       setImmWidth: $('#setImmWidth'), setImmWidthVal: $('#setImmWidthVal'),
       setImmersive: $('#setImmersive'),
       setSoftWrap: $('#setSoftWrap'), setRtfFont: $('#setRtfFont'),
-      segLang: $('#segLang'), segEdit: $('#segEdit'), setWipe: $('#setWipe'), setPersist: $('#setPersist'), setShowTitlebar: $('#setShowTitlebar'), metaGrid: $('#metaGrid'),
+      segLang: $('#segLang'), segEdit: $('#segEdit'), setWipe: $('#setWipe'), setPersist: $('#setPersist'), setShowTitlebar: $('#setShowTitlebar'), metaGrid: $('#metaGrid'), setScroll: $('#setScroll'),
       customRow: $('#customRow'), ctBg: $('#ctBg'), ctBg2: $('#ctBg2'),
       ctText: $('#ctText'), ctAccent: $('#ctAccent'),
       segAnim: $('#segAnim'), segAnimSpeed: $('#segAnimSpeed'), segFps: $('#segFps'), fpsNote: $('#fpsNote'),
@@ -365,19 +370,25 @@ DV.SettingsUI = (function () {
     // 顶部标题栏显隐
     els.setShowTitlebar.addEventListener('change', e => {
       DV.Settings.set({ showTitlebar: e.target.checked });
-      DV.toast(e.target.checked ? '已显示顶部标题栏' : '已隐藏顶部标题栏', '', 1500);
+      DV.toast(DV.t(e.target.checked ? '已显示顶部标题栏' : '已隐藏顶部标题栏'), '', 1500);
     });
 
     // 记住会话
     els.setPersist.addEventListener('change', e => {
       DV.Settings.set({ rememberSession: e.target.checked });
-      DV.toast('记住会话：' + (e.target.checked ? '开' : '关'), '', 1500);
+      DV.toast(DV.t('记住会话：{state}', { state: DV.t(e.target.checked ? '开' : '关') }), '', 1500);
+    });
+
+    // 记住阅读位置
+    els.setScroll.addEventListener('change', e => {
+      DV.Settings.set({ rememberScroll: e.target.checked });
+      DV.toast(DV.t('记住阅读位置：{state}', { state: DV.t(e.target.checked ? '开' : '关') }), '', 1500);
     });
 
     // RTF 使用阅读器字体
     els.setRtfFont.addEventListener('change', e => {
       DV.Settings.set({ rtfReaderFont: e.target.checked });
-      DV.toast('RTF 字体：' + (e.target.checked ? '跟随阅读器' : '使用文件自带'), '', 1600);
+      DV.toast(DV.t('RTF 字体：{state}', { state: DV.t(e.target.checked ? '跟随阅读器' : '使用文件自带') }), '', 1600);
     });
 
     // 工具：调试面板 / 诊断报告
@@ -391,7 +402,7 @@ DV.SettingsUI = (function () {
     // 按源换行
     els.setSoftWrap.addEventListener('change', e => {
       DV.Settings.set({ rtfSoftWrap: e.target.checked });
-      DV.toast('RTF 按源换行：' + (e.target.checked ? '开' : '关'), '', 1500);
+      DV.toast(DV.t('RTF 按源换行：{state}', { state: DV.t(e.target.checked ? '开' : '关') }), '', 1500);
     });
 
     // 沉浸开关

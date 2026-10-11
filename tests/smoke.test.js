@@ -668,9 +668,9 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
   }
 
-  /* --- 场景 7c-3：GBK 文档里夹杂孤立 CP1252 字节（macOS 智能引号 \'93 \'94）--- */
+  /* --- 场景 7c-3：声明了 cp936 就严格按 GBK —— 孤立高位字节直接丢弃，绝不落回 CP1252 --- */
   {
-    // 「第一章」的 GBK 字节 + 一个孤立的 \'93（左双引号，CP1252）+ 一个孤立 \'94
+    // 「第一章」的合法 GBK 字节 + 一个孤立的 \'93 + 一个孤立的 \'94
     const bytes = [181, 218, 210, 187, 213, 194, 147, 32, 148];
     const esc = bytes.map(x => "\\'" + x.toString(16).padStart(2, '0')).join('');
     const body = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil PingFangSC-Regular;}}' +
@@ -688,9 +688,13 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     ok(!!rr, '混合编码 RTF 已导入');
     if (rr) {
       const txt = rr.html.replace(/<[^>]*>/g, '');
-      ok(!/\uFFFD/.test(txt), '孤立 CP1252 字节不再产生 U+FFFD', JSON.stringify(txt.slice(0, 60)));
-      ok(txt.includes('第一章'), '中文正常：' + JSON.stringify(txt.slice(0, 40)));
-      ok(/[\u201c\u201d\u0093\u0094]/.test(rr.text) || txt.length > 0, '引号字符有落点');
+      ok(!/\uFFFD/.test(txt), '不产生 U+FFFD', JSON.stringify(txt.slice(0, 60)));
+      ok(txt.includes('第一章'), '合法 GBK 字节正常：' + JSON.stringify(txt.slice(0, 40)));
+      // cp936 下 0x93/0x94 是半个 GBK 字，必须丢弃；绝不能变成 CP1252 的 “ ” 或 C1 控制符
+      ok(!/[\u201c\u201d\u0093\u0094\u2014]/.test(txt),
+         'cp936 下孤立高位字节被丢弃（不落回 CP1252）', JSON.stringify(txt));
+      const c1 = txt.match(/[\u0080-\u009f]/g);
+      ok(!c1, '不出现 C1 控制符', c1 ? JSON.stringify(c1) : '');
       App.closeFile(rr.id);
     }
   }
@@ -734,33 +738,93 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
   }
 
-  /* --- 场景 7c-5：CP1252 智能引号（\'93 \'94）不能变成 C1 控制符 --- */
+  /* --- 场景 7c-5：\'hh 一律以声明的代码页为准 --- */
   {
-    // 真实形态：引号单独成组，与中文的 GBK 字节不混在同一段
     const q = n => "\\'" + n.toString(16).padStart(2, '0');
-    const han = [0xCB, 0xFB, 0xCB, 0xB5].map(q).join('');   // 他说
-    // 引号字节各自独立（真实文件里就是这样，中间隔着别的字节）
-    const body = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil PingFangSC-Regular;}}' +
-      '\\pard\\f0\\fs24 ' + q(0x93) + ' ' + han + ' ' + q(0x94) + '\\par}';
-    const raw = new Uint8Array(Buffer.from(body, 'latin1'));
-    const rec = {
-      id: 'rtf-q-1', name: '引号回归.rtf', path: '', size: raw.length, kind: 'rtf',
-      file: { name: '引号回归.rtf', size: raw.length, webkitRelativePath: '',
-              arrayBuffer: async () => raw.buffer.slice(0) },
-      text: '', bytes: raw.length,
-    };
-    await App.ingest([rec], { showProgress: false });
-    const rr = App.state.files.find(f => f.name === '引号回归.rtf');
-    ok(!!rr, '引号回归文件已导入');
-    if (rr) {
-      const txt = rr.html.replace(/<[^>]*>/g, '');
-      ok(txt.includes('\u201c') && txt.includes('\u201d'), '\'93/\'94 渲染为中文引号“”',
-         JSON.stringify(txt) + ' codes=' + [...txt].map(c => c.charCodeAt(0).toString(16)).join(','));
-      const c1 = txt.match(/[\u0080-\u009f]/g);
-      ok(!c1, '不再出现 C1 控制符', c1 ? JSON.stringify(c1) : '');
-      ok(txt.includes('他说'), '引号之间的中文正常：' + JSON.stringify(txt));
-      App.closeFile(rr.id);
+
+    // (a) 声明 cp1252：\'93 \'94 是西文智能引号，\'97 是破折号
+    const b1252 = '{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fnil Helvetica;}}' +
+      '\\pard\\f0\\fs24 ' + q(0x93) + 'hi' + q(0x94) + ' ' + q(0x97) + '\\par}';
+    const raw1252 = new Uint8Array(Buffer.from(b1252, 'latin1'));
+    await App.ingest([{
+      id: 'rtf-cp1252', name: 'cp1252.rtf', path: '', size: raw1252.length, kind: 'rtf',
+      file: { name: 'cp1252.rtf', size: raw1252.length, webkitRelativePath: '',
+              arrayBuffer: async () => raw1252.buffer.slice(0) },
+      text: '', bytes: raw1252.length,
+    }], { showProgress: false });
+    const r1252 = App.state.files.find(f => f.name === 'cp1252.rtf');
+    ok(!!r1252, 'cp1252 RTF 已导入');
+    if (r1252) {
+      const txt = r1252.html.replace(/<[^>]*>/g, '');
+      ok(txt.includes('\u201c') && txt.includes('\u201d'), 'cp1252：\'93/\'94 → 中文引号 “ ”', JSON.stringify(txt));
+      ok(txt.includes('\u2014'), 'cp1252：\'97 → 破折号 —', JSON.stringify(txt));
+      App.closeFile(r1252.id);
     }
+
+    // (b) 声明 cp936：同一个 \'97 必须按 GBK 走；孤立时丢弃，成对时解出汉字
+    const body936 = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil PingFangSC-Regular;}}' +
+      '\\pard\\f0\\fs24 A' + q(0x97) + 'B' + q(0x97) + q(0x6c) + 'C\\par}';
+    const raw936 = new Uint8Array(Buffer.from(body936, 'latin1'));
+    await App.ingest([{
+      id: 'rtf-cp936-hex', name: 'cp936-hex.rtf', path: '', size: raw936.length, kind: 'rtf',
+      file: { name: 'cp936-hex.rtf', size: raw936.length, webkitRelativePath: '',
+              arrayBuffer: async () => raw936.buffer.slice(0) },
+      text: '', bytes: raw936.length,
+    }], { showProgress: false });
+    const r936 = App.state.files.find(f => f.name === 'cp936-hex.rtf');
+    ok(!!r936, 'cp936 RTF 已导入');
+    if (r936) {
+      const txt = r936.html.replace(/<[^>]*>/g, '');
+      ok(!txt.includes('\u2014'), 'cp936：\'97 不再被解成破折号', JSON.stringify(txt));
+      ok(!/\uFFFD/.test(txt), 'cp936：不含 U+FFFD', JSON.stringify(txt));
+      ok(txt.includes('\u689d'), 'cp936：\'97\'6c 按 GBK 解出「條」', JSON.stringify(txt));
+      App.closeFile(r936.id);
+    }
+  }
+
+  /* --- 场景 7c-6：阅读位置记忆（切换文件 / 关闭设置 / 写回后重绘）--- */
+  {
+    const mk = (name, text) => ({
+      id: 'pos-' + name, name: name, path: '', size: text.length,
+      kind: DV.kindOf(name), text: text, bytes: text.length,
+      file: { name: name, size: text.length, webkitRelativePath: '',
+              arrayBuffer: async () => new TextEncoder().encode(text).buffer },
+    });
+    await App.ingest([mk('位置A.txt', 'A段。'.repeat(80)), mk('位置B.txt', 'B段。'.repeat(80))],
+      { showProgress: false });
+    const A = App.state.files.find(f => f.name === '位置A.txt');
+    const B = App.state.files.find(f => f.name === '位置B.txt');
+    const sc = documentObj.getElementById('docScroll');
+    ok(!!(A && B && sc), '阅读位置测试文件已就绪');
+
+    // 默认开启：记录 A 的位置，切走再切回应回到原处
+    DV.Settings.set({ rememberScroll: true });
+    A.scrollTop = 420;
+    App.select(B.id);
+    ok(sc.scrollTop === 0, '切到没有记录的文件从顶部开始', 'scrollTop=' + sc.scrollTop);
+    App.select(A.id);
+    ok(sc.scrollTop === 420, '切回 A 恢复上次读到的位置', 'scrollTop=' + sc.scrollTop);
+
+    // 关闭设置：一律从顶部开始
+    DV.Settings.set({ rememberScroll: false });
+    App.select(B.id);
+    App.select(A.id);
+    ok(sc.scrollTop === 0, '关闭「记住阅读位置」后回到顶部', 'scrollTop=' + sc.scrollTop);
+
+    // 写回源文件后的重绘：停在原处，不能弹回顶部
+    DV.Settings.set({ rememberScroll: true });
+    sc.scrollTop = 300;
+    App.paintDoc(A, { keepScroll: true });
+    ok(sc.scrollTop === 300, '写回源文件后的重绘不跳回顶部', 'scrollTop=' + sc.scrollTop);
+
+    // 会话里要能带上阅读位置
+    A.scrollTop = 260;
+    App.saveSession();
+    const dumped = JSON.parse(localStorageData['docviewer.session'] || '{}');
+    const recA = (dumped.files || []).find(f => f.name === '位置A.txt');
+    ok(recA && Number(recA.scroll) === 260, '会话记录了阅读位置', recA ? 'scroll=' + recA.scroll : '缺少记录');
+
+    App.closeFile(A.id); App.closeFile(B.id);
   }
 
   /* --- 场景 7d：帧率采样（不受 rAF 限制）--- */
@@ -1196,6 +1260,10 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
 
     // 词典与 DV.t（DOM 替换路径在真实应用里用截图核对）
     ok(DV.i18n.MAP['打开文件'] === 'Open files', '词典：打开文件 → Open files');
+    // 阅读位置设置项必须在面板里，且有英文译文
+    ok(!!documentObj.getElementById('setScroll'), '设置里有「记住每个文件的阅读位置」开关');
+    ok(!!DV.i18n.MAP['记住每个文件的阅读位置'], '该开关有英文译文',
+       DV.i18n.MAP['记住每个文件的阅读位置']);
     ok(DV.t('设置') === '设置', '中文模式下 t() 原样返回');
     S.set({ lang: 'en' });
     ok(documentObj.body.getAttribute('lang') === 'en', 'lang 属性切到 en');
@@ -1237,6 +1305,38 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       while ((mm = reList.exec(jsSrc))) if (!DV.i18n.MAP[mm[1]]) jsMissing.push(mm[1]);
       ok(jsMissing.length === 0, '主题/字体等列表文案都有译文（缺 ' + jsMissing.length + ' 条）',
          jsMissing.slice(0, 8).join(' | '));
+
+      // 所有 JS 里进入界面的中文文案（DV.t / toast / textContent / title）都必须有译文。
+      // 带占位符的按 {n} 归一化后再查，防止「拼接式文案」再次漏译。
+      {
+        const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js'));
+        const jsMissing2 = [];
+        jsFiles.forEach(f => {
+          const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+          let inBlock = false;                                            // 跨行块注释状态
+          src.split('\n').forEach((line, i) => {
+            const startsBlock = /\/\*/.test(line);
+            const endsBlock = /\*\//.test(line);
+            const wasBlock = inBlock;
+            if (startsBlock && !endsBlock) inBlock = true;
+            else if (wasBlock && endsBlock) inBlock = false;
+            if (wasBlock || startsBlock) return;                          // 整行在注释里
+            if (/^\s*(\/\/|\*)/.test(line)) return;                      // 行注释
+            if (!/DV\.t\(|toast\(|textContent\s*=|\.title\s*=|placeholder\s*=/.test(line)) return;
+            const re = /'([^']*[\u4e00-\u9fff][^']*)'/g;
+            let m2;
+            while ((m2 = re.exec(line))) {
+              const lit = m2[1];
+              if (lit.length < 2) continue;
+              if (DV.i18n.MAP[lit]) continue;
+              if (DV.i18n.MAP[lit.replace(/\{[a-zA-Z]+\}/g, '{n}')]) continue;   // 占位符归一化
+              jsMissing2.push(lit + ' (' + f + ':' + (i + 1) + ')');
+            }
+          });
+        });
+        ok(jsMissing2.length === 0, 'JS 动态文案都有英文译文（缺 ' + jsMissing2.length + ' 条）',
+           jsMissing2.slice(0, 8).join(' | '));
+      }
 
       // 西文字体已提供
       const latin = DV.Settings.FONTS.filter(f => f.latin);

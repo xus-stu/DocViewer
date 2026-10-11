@@ -19,6 +19,11 @@ third-party runtime code.
 ## Features
 
 ### Reading
+
+- **Remembers where you were.** Each file keeps its own scroll position: reopening a file
+  (or relaunching the app) returns to the last line you read instead of jumping to the top,
+  and writing an edit back no longer scrolls the view away. On by default; turn off with
+  *Settings → Documents → Remember the reading position of each file*.
 - **RTF, TXT, Markdown** and common **source / config files** (`.java`, `.kt`, `.py`, `.js`,
   `.ts`, `.go`, `.rs`, `.c`, `.cpp`, `.cs`, `.swift`, `.rb`, `.php`, `.sh`, `.sql`,
   `.html`, `.css`, `.json`, `.xml`, `.yml`, `.toml`, `.gradle`, `.properties`, …)
@@ -89,6 +94,14 @@ open ~/Desktop/DocViewer.app
   Safari / Chrome / Firefox)
 - macOS + Xcode **Command Line Tools** (`swiftc`) for the native app
 - Python 3 with Pillow — *only* if you want to regenerate the app icon
+
+### Opening a file from the command line
+
+`DocViewer <file>` and `open -a DocViewer <file>` both work. The native shell only treats a
+positional argument as the web root when that directory actually contains `index.html`;
+otherwise it always uses the bundled `web/`. (Earlier builds hijacked any positional argument
+as the root, so `DocViewer some.rtf` pointed the page at a folder with no `index.html` and the
+window came up blank.)
 
 ## Build the macOS app
 
@@ -168,6 +181,16 @@ The suites cover parser edge cases (CP1252 quotes, `\ucN` skip semantics, multi-
 `\'hh`, tables, soft breaks), the whole UI (file list, selection, merge/split, settings,
 themes, i18n coverage, contrast ratios, editing rules) and the native writer (encoding
 round-trips, backups, RTF byte preservation).
+
+## Encoding rules for RTF `\'hh` bytes
+
+The **declared code page wins**: `\ansicpg936` is decoded as GBK (950 → Big5, 932 → Shift-JIS).
+Without `\ansicpg`, the font table's `\fcharset` decides (134 → GBK, 136 → Big5, 0/1/2 → 1252),
+and only then does it fall back to 936.
+
+When a multi-byte code page is declared, bytes that do not form a valid sequence are **dropped** —
+they are never silently reinterpreted through CP1252. Otherwise a stray `\'97` in a cp936 file
+would turn into an em dash and slip into the middle of Chinese prose.
 
 ## Design notes
 

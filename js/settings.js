@@ -152,6 +152,7 @@ DV.Settings = (function () {
     sidebar: true,     // 侧栏是否显示（可单独收起）
     showTitlebar: true,// 是否显示应用标题栏（DocViewer 那一行）
     rememberSession: true, // 记住会话（默认启用）
+    rememberScroll: true,  // 记住每个文件的阅读位置（默认启用）
     customTheme: {     // 「自定义」主题的 4 个基础色
       bg: '#15181c', bg2: '#1d2126', text: '#f2f5f8', accent: '#8cc63f',
     },

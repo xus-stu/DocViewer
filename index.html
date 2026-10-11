@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DocViewer — RTF / TXT / Markdown 多文件浏览器</title>
-<link rel="stylesheet" href="css/hmcl.css?v=6">
+<link rel="stylesheet" href="css/hmcl.css?v=7">
 </head>
 <body data-theme="dark">
 
@@ -253,6 +253,8 @@
             <strong>Markdown 不参与编辑</strong>，始终保持原来的渲染显示。</div>
           <label class="chk"><input type="checkbox" id="setSoftWrap"> RTF 按源文件换行</label>
           <label class="chk"><input type="checkbox" id="setPersist"> 记住会话（下次打开恢复上次的文件）</label>
+          <label class="chk"><input type="checkbox" id="setScroll"> 记住每个文件的阅读位置</label>
+          <div class="set-note">开启后，重新打开某个文件（或重启应用）会回到上次读到的位置，而不是文件顶部。编辑写回源文件时也不会再跳回顶部。</div>
           <div class="set-note">
             有些编辑器（如 macOS 文本编辑）导出的 RTF 用**裸换行**分段、不写 <code>\par</code>。
             按 RTF 规范这算空白，会被合并成一整段 —— 打开这个开关就把裸换行当软换行处理。
@@ -394,15 +396,15 @@
 <!-- 浮层提示 -->
 <div class="toasts" id="toasts"></div>
 
-<script src="js/util.js?v=6"></script>
-<script src="js/i18n.js?v=6"></script>
-<script src="js/welcome.js?v=6"></script>
-<script src="js/frames.js?v=6"></script>
-<script src="js/settings.js?v=6"></script>
-<script src="js/md.js?v=6"></script>
-<script src="js/rtf.js?v=6"></script>
-<script src="js/debug.js?v=6"></script>
-<script src="js/ui-settings.js?v=6"></script>
-<script src="js/app.js?v=6"></script>
+<script src="js/util.js?v=7"></script>
+<script src="js/i18n.js?v=7"></script>
+<script src="js/welcome.js?v=7"></script>
+<script src="js/frames.js?v=7"></script>
+<script src="js/settings.js?v=7"></script>
+<script src="js/md.js?v=7"></script>
+<script src="js/rtf.js?v=7"></script>
+<script src="js/debug.js?v=7"></script>
+<script src="js/ui-settings.js?v=7"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>

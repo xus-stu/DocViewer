@@ -68,9 +68,25 @@ window.DV = window.DV || {};
     return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'UTF-8 (替换非法字节)' };
   }
 
+  /**
+   * 判断 RTF 的代码页。
+   *
+   * 优先级：\ansicpg 声明 > 字体表里的 \fcharset > 默认 936。
+   * 声明值是唯一权威 —— 用户文件写的是什么编码就按什么解。
+   */
   function detectRtfCodepage(text) {
-    const m = /\\ansicpg(\d+)/i.exec(text.slice(0, 4000));
-    return m ? parseInt(m[1], 10) : 936;
+    const head = text.slice(0, 6000);
+    const m = /\\ansicpg(\d+)/i.exec(head);
+    if (m) return parseInt(m[1], 10);
+    const cs = /\\fcharset(\d+)/i.exec(head);
+    if (cs) {
+      const n = parseInt(cs[1], 10);
+      if (n === 134) return 936;                       // GB2312 / GBK
+      if (n === 136) return 950;                       // Big5
+      if (n === 128 || n === 129) return 932;          // Shift-JIS
+      if (n === 0 || n === 1 || n === 2 || n === 77) return 1252;   // 西文
+    }
+    return 936;
   }
 
   /**
@@ -100,13 +116,31 @@ window.DV = window.DV || {};
       0x9E: '\u017E', 0x9F: '\u0178',
     };
 
-    // 0x80–0x9F 必须走 CP1252 映射：直接 String.fromCharCode 会得到 C1 控制符，
-    // 而 TextEdit 的中文智能引号正是 0x93/0x94 → “ ”
+    // 只有当文件确实是单字节编码（cp1252 / 未声明且无多字节编码器）时才用 CP1252。
+    // 声明了 cp936 一类多字节编码时，全部交给该编码器，绝不混入 CP1252 字形，
+    // 否则孤立的 \'97 会被悄悄解成破折号「—」。
     const single = b => (b < 128 ? String.fromCharCode(b) : (CP1252[b] || String.fromCharCode(b)));
 
     function parseSingleHex(hex) {
       const b = parseInt(String(hex).replace(/[^0-9a-fA-F]/g, '').slice(0, 2), 16);
       return isNaN(b) ? '' : b;
+    }
+
+    /** 多字节编码：整段解码，非法序列直接丢弃（保留其中合法的字符） */
+    function decodeStrict(arr) {
+      try {
+        const out = decoder.decode(arr);
+        return out.indexOf('\uFFFD') >= 0 ? out.replace(/\uFFFD/g, '') : out;
+      } catch (e) {
+        let out = '';
+        for (let k = 0; k < arr.length; k++) {
+          try {
+            const one = decoder.decode(Uint8Array.from([arr[k]]));
+            if (one.indexOf('\uFFFD') < 0) out += one;
+          } catch (e2) { /* 跳过非法字节 */ }
+        }
+        return out;
+      }
     }
 
     return function decode(bytes) {
@@ -115,15 +149,14 @@ window.DV = window.DV || {};
         const b = parseSingleHex(bytes);
         if (isNaN(b)) return '';
         if (b < 128) return String.fromCharCode(b);
-        if (decoder) { try { return decoder.decode(Uint8Array.from([b])); } catch (e) { /* 落回单字节 */ } }
+        if (decoder) return decodeStrict(Uint8Array.from([b]));
         return single(b);
       }
       // 新接口：Uint8Array（可能含多字节字符）
       const arr = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
       if (!arr.length) return '';
-      if (!decoder) return Array.prototype.map.call(arr, single).join('');
-      try { return decoder.decode(arr); }
-      catch (e) { return Array.prototype.map.call(arr, single).join(''); }
+      if (decoder) return decodeStrict(arr);
+      return Array.prototype.map.call(arr, single).join('');
     };
   }
 
@@ -251,8 +284,8 @@ window.DV = window.DV || {};
     } else {
       saveSession();
     }
-    if (fail) DV.toast(fail + ' 个文件读取失败，详见 F3 日志', 'err');
-    else if (ok > 1) DV.toast('已导入 ' + ok + ' 个文件', '', 1800);
+    if (fail) DV.toast(DV.t('{n} 个文件读取失败，详见 F3 日志', { n: fail }), 'err');
+    else if (ok > 1) DV.toast(DV.t('已导入 {n} 个文件', { n: ok }), '', 1800);
   }
 
   function countLines(t) { return t ? t.split('\n').length : 0; }
@@ -444,7 +477,7 @@ window.DV = window.DV || {};
         const f = state.files.find(x => x.id === id);
         return sum + (f ? (f.bytes || f.size || 0) : 0);
       }, 0);
-      els.selHint.textContent = '合计 ' + DV.fmtBytes(total) + ' · Ctrl/⌘ 点选 · Shift 连选 · 拖动排序';
+      els.selHint.textContent = DV.t('合计 {size} · Ctrl/⌘ 点选 · Shift 连选 · 拖动排序', { size: DV.fmtBytes(total) });
       els.btnMerge.disabled = n < 2;
       els.btnMerge.title = n < 2
         ? '至少选择 2 个文件才能拼接'
@@ -523,7 +556,7 @@ window.DV = window.DV || {};
     refreshList();
     select(item.id);
     DV.Log.ok('拼接 ' + parts.length + ' 个文件 → ' + item.name + '（原文件未改动）');
-    DV.toast('已拼接 ' + parts.length + ' 个文件（只影响本阅读器）', '', 2400);
+    DV.toast(DV.t('已拼接 {n} 个文件（只影响本阅读器）', { n: parts.length }), '', 2400);
     return item;
   }
 
@@ -551,7 +584,7 @@ window.DV = window.DV || {};
     DV.Log.info('拆开合并文档 ' + item.name + '（位于 #' + idx + '）→ ' + parts.length + ' 个文件，当前共 ' + state.files.length);
     refreshList();
     select(parts[0].id);
-    DV.toast('已拆开为 ' + parts.length + ' 个文件', '', 1800);
+    DV.toast(DV.t('已拆开为 {n} 个文件', { n: parts.length }), '', 1800);
   }
 
   /** 跳转到第 n 段 */
@@ -636,8 +669,10 @@ window.DV = window.DV || {};
     DV.Log.info('打开文件：' + item.name + '（' + (item.encoding || '?') + '，' + DV.fmtBytes(item.bytes || item.size) + '）');
   }
 
-  function paintDoc(item) {
+  function paintDoc(item, opts) {
     const k = kindBadge(item);
+    // 重绘前的真实位置：写回源文件后的重绘要靠它原地不动
+    const liveScrollTop = els.docScroll.scrollTop;
     els.docTitle.textContent = item.name;
     els.docTitle.title = item.path || item.name;
     const mf = DV.Settings.get().metaFields || {};
@@ -684,11 +719,26 @@ window.DV = window.DV || {};
     // 字号
 
     const t1 = performance.now();
-    // 文档滑入 + 平滑回到顶部
+    // 文档滑入
     if (DV.Settings.get().anim !== 'off') {
       doc.classList.remove('slide-in'); void doc.offsetWidth; doc.classList.add('slide-in');
     }
-    if (els.docScroll.scrollTop > 0) scrollDocTo(0, 260); else els.docScroll.scrollTop = 0;
+
+    /* 阅读位置：
+       - 因写回源文件而重绘（opts.keepScroll）：原地不动，别再跳回顶部
+       - 否则按设置决定：开 = 回到该文件上次的位置，关 = 回到顶部 */
+    const remember = DV.Settings.get().rememberScroll !== false;
+    const target = (opts && opts.keepScroll)
+      ? liveScrollTop
+      : (remember ? (Number(item.scrollTop) || 0) : 0);
+    if (target > 0) {
+      els.docScroll.scrollTop = target;
+      // 图片/字体排版完成后高度会变，再校正一次
+      requestAnimationFrame(() => { if (active() === item) els.docScroll.scrollTop = target; });
+    } else {
+      // 从头开始：立即归零 —— 切换文件时不该看到一段滚动动画
+      els.docScroll.scrollTop = 0;
+    }
     setupReveal();
 
     // 统计
@@ -741,7 +791,7 @@ window.DV = window.DV || {};
     els.mergeLabel.textContent = it.parts[state.activePart] ? it.parts[state.activePart].name : '拼接文档';
     els.mergeLabel.title = it.parts.map((p, i) => (i + 1) + '. ' + p.name).join('\n');
     els.mergePart.textContent = (state.activePart + 1) + ' / ' + n;
-    els.btnMergeSep.textContent = '标题：' + (state.mergeSep ? '开' : '关');
+    els.btnMergeSep.textContent = DV.t('标题：{state}', { state: DV.t(state.mergeSep ? '开' : '关') });
     els.btnMergePrev.disabled = state.activePart <= 0;
     els.btnMergeNext.disabled = state.activePart >= n - 1;
   }
@@ -878,6 +928,7 @@ window.DV = window.DV || {};
       const rec = (f) => ({
         name: f.name, path: f.path, fullPath: f.fullPath, size: f.bytes || f.size,
         encoding: f.encoding, kind: f.kind, text: f.text || '',
+        scroll: Number(f.scrollTop) || 0,        // 该文件的阅读位置
       });
       state.files.forEach(f => {
         const t = f.text || '';
@@ -893,6 +944,7 @@ window.DV = window.DV || {};
             merged: true, name: f.name, path: f.path, kind: 'merged',
             encoding: f.encoding, lines: f.lines, chars: f.chars, size: f.bytes || f.size,
             parts: parts,
+            scroll: Number(f.scrollTop) || 0,
           });
           return;
         }
@@ -1097,7 +1149,7 @@ window.DV = window.DV || {};
         item.text = DV.rtf.rebuildSource(item.rawSrc || '', els.doc);
         item.rawSrc = item.text;
         renderFile(item);
-        paintDoc(item);
+        paintDoc(item, { keepScroll: true });   // 写回后别把视图弹回顶部
       } else {
         item.text = domToText(els.doc);
         item.lines = countLines(item.text);
@@ -1170,6 +1222,7 @@ window.DV = window.DV || {};
         text: f.text || '',
         file: null,
         restored: true,
+        scrollTop: Number(f.scroll) || 0,        // 上次读到哪儿
       };
       item.lines = countLines(item.text);
       item.chars = item.text.length;
@@ -1199,6 +1252,7 @@ window.DV = window.DV || {};
           chars: parts.reduce((a, p) => a + (p.chars || 0), 0),
           warnings: [],
           restored: true,
+          scrollTop: Number(f.scroll) || 0,
         };
         item.size = item.bytes;
         item.text = parts.map(p => '# ── ' + p.name + ' ──\n' + (p.text || '')).join('\n\n');
@@ -1223,7 +1277,7 @@ window.DV = window.DV || {};
       return false;
     }
     DV.Log.ok('已从上次会话恢复 ' + state.files.length + ' 个文件');
-    DV.toast('已恢复上次的 ' + state.files.length + ' 个文件', '', 2200);
+    DV.toast(DV.t('已恢复上次的 {n} 个文件', { n: state.files.length }), '', 2200);
     return true;
   }
 
@@ -1271,9 +1325,9 @@ window.DV = window.DV || {};
       const last = state.files[state.files.length - 1];
       if (last) select(last.id);
       DV.Log.ok('原生选择导入 ' + ok + ' 个文件');
-      DV.toast('已导入 ' + ok + ' 个文件', '', 1800);
+      DV.toast(DV.t('已导入 {n} 个文件', { n: ok }), '', 1800);
     }
-    if (fail) DV.toast(fail + ' 个文件读取失败，详见 F3 日志', 'err');
+    if (fail) DV.toast(DV.t('{n} 个文件读取失败，详见 F3 日志', { n: fail }), 'err');
   }
 
   /* ================= 拖拽导入 ================= */
@@ -1476,7 +1530,7 @@ window.DV = window.DV || {};
         ? it.parts.map((p, i) => '# ── ' + (i + 1) + '/' + it.parts.length + ' ' + p.name + ' ──\n' + (p.text || '')).join('\n\n')
         : (it.text || '');
       navigator.clipboard.writeText(copyText).then(
-        () => { DV.toast('已复制 ' + DV.fmtNum(copyText.length) + ' 个字符', '', 1800); DV.Log.ok('复制全文：' + it.name); },
+        () => { DV.toast(DV.t('已复制 {n} 个字符', { n: DV.fmtNum(copyText.length) }), '', 1800); DV.Log.ok(DV.t('复制全文：') + it.name); },
         () => DV.toast('复制失败（浏览器限制）', 'err'));
     });
 
@@ -1685,6 +1739,7 @@ window.DV = window.DV || {};
       if (!it) return;
       const pct = els.docScroll.scrollTop / Math.max(1, els.docScroll.scrollHeight - els.docScroll.clientHeight) * 100;
       els.sbHint.textContent = DV.t('滚动') + ' ' + pct.toFixed(0) + '% · ' + DV.t('F3 调试');
+      if (DV.Settings.get().rememberScroll !== false) it.scrollTop = els.docScroll.scrollTop;
     }, { passive: true });
 
     wireDragDrop();
@@ -1703,7 +1758,7 @@ window.DV = window.DV || {};
     if (!it) { DV.toast('没有打开的文件', 'warn'); return; }
     state.raw = !state.raw;
     $('#btnRaw').classList.toggle('on', state.raw);
-    $('#btnRaw').textContent = state.raw ? '渲染' : '源码';
+    $('#btnRaw').textContent = DV.t(state.raw ? '渲染' : '源码');
     paintDoc(it);
     if (state.query) runSearch(state.query);
     saveSession();
@@ -1896,7 +1951,7 @@ window.DV = window.DV || {};
     if (!restored) seedWelcome();          // 第一次打开：放入内置的 README(EN) 与 README(ZH)
     applyEditMode();
     $('#optWrap').checked = state.wrap;
-    if (state.raw) { $('#btnRaw').classList.add('on'); $('#btnRaw').textContent = '渲染'; }
+    if (state.raw) { $('#btnRaw').classList.add('on'); $('#btnRaw').textContent = DV.t('渲染'); }
     applyWrap();
 
     window.__DV_GBK_OK = gbkSupported();

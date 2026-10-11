@@ -91,15 +91,34 @@ DV.rtf = (function () {
       }
       return out;
     };
-    const rawDecode = opts.decodeHex || defaultDecode;
-    /** 整段解码；若该编码下非法（孤立 \'93 这类 CP1252 字节），退化为逐字节解码，避免 U+FFFD */
+    const injected = typeof opts.decodeHex === 'function';
+    const rawDecode = injected ? opts.decodeHex : defaultDecode;
+    /**
+     * 整段解码。
+     *
+     * 调用方注入了编码器（按 RTF 的 \ansicpg 注入 GBK / Big5 / Shift-JIS）时，
+     * 一律以**声明编码**为准：非法序列（孤立的 \'97 这种半个 GBK 字）直接丢弃，
+     * 绝不落回 CP1252 —— 否则 cp936 文件里一个孤立高位字节会被悄悄变成
+     * 破折号、引号之类的拉丁字符，混进中文正文里。
+     *
+     * 没有注入时（默认 CP1252 近似）保留原有的 C1 → 可见字形修正。
+     */
     const decodeHex = function (bytes) {
       try {
         const out = rawDecode(bytes);
+        if (injected) return out.indexOf('\uFFFD') >= 0 ? out.replace(/\uFFFD/g, '') : out;
         if (out.indexOf('\uFFFD') >= 0) return fixC1(fallbackDecode(bytes));
         return fixC1(out);
       } catch (e) {
-        return fixC1(fallbackDecode(bytes));
+        if (!injected) return fixC1(fallbackDecode(bytes));
+        let out = '';
+        for (let k = 0; k < bytes.length; k++) {
+          try {
+            const one = rawDecode(Uint8Array.from([bytes[k]]));
+            if (one.indexOf('\uFFFD') < 0) out += one;
+          } catch (e2) { /* 跳过非法字节 */ }
+        }
+        return out;
       }
     };
     function fallbackDecode(bytes) {

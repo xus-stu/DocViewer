@@ -82,7 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var rootURL: URL!
     private var pendingFiles: [URL] = []      // 启动完成前收到的文件，等 webView 就绪再投递
 
-    // 由启动参数传入，可指向 `web` 子目录之外的路径
+    // 由启动参数传入，可指向 `web` 子目录之外的路径。
+    //
+    // 只有候选目录里**确实存在 index.html** 时才认作网页根目录 ——
+    // 否则 `DocViewer 某文档.rtf` 会把根目录指到该文档所在文件夹，
+    // 页面取不到 index.html，窗口就是一片空白。
     func resolveRoot() -> URL {
         let bundleWeb = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Resources/web")
@@ -90,9 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let args = CommandLine.arguments.dropFirst()
         for a in args where !a.hasPrefix("-") {
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: a, isDirectory: &isDir) {
-                return isDir.boolValue ? URL(fileURLWithPath: a) : URL(fileURLWithPath: a).deletingLastPathComponent()
-            }
+            guard fm.fileExists(atPath: a, isDirectory: &isDir) else { continue }
+            let dir = isDir.boolValue ? URL(fileURLWithPath: a) : URL(fileURLWithPath: a).deletingLastPathComponent()
+            if fm.fileExists(atPath: dir.appendingPathComponent("index.html").path) { return dir }
         }
         return bundleWeb
     }
