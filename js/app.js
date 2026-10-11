@@ -185,6 +185,14 @@ window.DV = window.DV || {};
       info = { '按纯文本展示': '是' };
     }
 
+    // 拼接文档走 renderMerged，绝不能落到下面的纯文本分支（否则看起来像源码）
+    if (kind === 'merged' && item.parts) {
+      item.rawSrc = undefined;
+      renderMerged(item);
+      warnings.forEach(w => DV.Log.warn(item.name + '：' + w));
+      return;
+    }
+
     item.html = html;
     item.info = info;
     item.warnings = warnings;
@@ -866,15 +874,30 @@ window.DV = window.DV || {};
     try {
       const list = [];
       let total = 0;
+      // 单个文档的记录（拼接文档的每个 part 也用同一种结构）
+      const rec = (f) => ({
+        name: f.name, path: f.path, fullPath: f.fullPath, size: f.bytes || f.size,
+        encoding: f.encoding, kind: f.kind, text: f.text || '',
+      });
       state.files.forEach(f => {
         const t = f.text || '';
         if (t.length > MAX_KEEP) return;
         if (total + t.length > MAX_TOTAL) return;
+        if (f.merged) {
+          // 拼接文档：把各来源一起存下来，恢复后才能重建合并视图（可拆分、分段标题）
+          const parts = (f.parts || []).map(rec);
+          const sum = parts.reduce((a, p) => a + (p.text || '').length, 0);
+          if (!parts.length || sum > MAX_KEEP || total + sum > MAX_TOTAL) return;
+          total += sum;
+          list.push({
+            merged: true, name: f.name, path: f.path, kind: 'merged',
+            encoding: f.encoding, lines: f.lines, chars: f.chars, size: f.bytes || f.size,
+            parts: parts,
+          });
+          return;
+        }
         total += t.length;
-        list.push({
-          name: f.name, path: f.path, fullPath: f.fullPath, size: f.bytes || f.size,
-          encoding: f.encoding, kind: f.kind, text: t,
-        });
+        list.push(rec(f));
       });
       localStorage.setItem('docviewer.session', JSON.stringify({
         v: 1, at: Date.now(), active: active() ? active().name : null, files: list,
@@ -1129,9 +1152,14 @@ window.DV = window.DV || {};
     try { data = JSON.parse(raw); } catch (e) { return false; }
     if (!data || !Array.isArray(data.files) || !data.files.length) return false;
 
-    data.files.forEach(f => {
+    // 旧版本会话里的拼接文档没有 parts（只有一段拼好的纯文本），
+    // 恢复出来只会是一坨源码；不如跳过，提示用户重新拼接。
+    const legacyMerged = data.files.filter(f => f && f.kind === 'merged' && !f.merged);
+
+    // 单条记录 → 文档条目
+    const toItem = (f, id) => {
       const item = {
-        id: 'f' + (++uid),
+        id: id,
         name: f.name,
         path: f.path || '',
         fullPath: f.fullPath || '',        // 恢复后仍要能写回源文件
@@ -1146,13 +1174,54 @@ window.DV = window.DV || {};
       item.lines = countLines(item.text);
       item.chars = item.text.length;
       renderFile(item);
-      state.files.push(item);
+      return item;
+    };
+
+    data.files.forEach(f => {
+      if (f && f.merged) {
+        // 拼接文档：先还原每个来源，再重建合并视图
+        const parts = (f.parts || []).filter(Boolean).map(p => toItem(p, 'f' + (++uid)));
+        if (parts.length < 2) {                      // 数据不完整就退回成独立文件
+          parts.forEach(p => state.files.push(p));
+          return;
+        }
+        const item = {
+          id: 'm' + (++uid),
+          name: f.name,
+          path: f.path || parts.map(p => p.path || p.name).join('  +  '),
+          kind: 'merged',
+          merged: true,
+          parts: parts,
+          bytes: parts.reduce((a, p) => a + (p.bytes || 0), 0),
+          size: 0,
+          encoding: f.encoding || ('合并视图 · ' + Array.from(new Set(parts.map(p => p.encoding))).join(' / ')),
+          lines: parts.reduce((a, p) => a + (p.lines || 0), 0),
+          chars: parts.reduce((a, p) => a + (p.chars || 0), 0),
+          warnings: [],
+          restored: true,
+        };
+        item.size = item.bytes;
+        item.text = parts.map(p => '# ── ' + p.name + ' ──\n' + (p.text || '')).join('\n\n');
+        renderMerged(item);                          // 生成分段 HTML，恢复后仍可拆分
+        state.files.push(item);
+        return;
+      }
+      if (f && f.kind === 'merged' && !f.merged) return;   // 旧格式拼接文档：跳过
+      state.files.push(toItem(f, 'f' + (++uid)));
     });
     state.wrap = data.wrap !== false;
     state.raw = !!data.raw;
     refreshList();
     const tgt = state.files.find(f => f.name === data.active) || state.files[0];
     if (tgt) select(tgt.id);
+    if (legacyMerged.length) {
+      DV.Log.warn('旧会话里的 ' + legacyMerged.length + ' 个拼接文档缺少来源数据，已跳过（请重新拼接）');
+      DV.toast('旧格式的拼接文档已跳过，请重新拼接（本次已修复该问题）', 'warn', 3400);
+    }
+    if (!state.files.length) {                 // 全被跳过了
+      DV.Log.info('会话里没有可恢复的文档');
+      return false;
+    }
     DV.Log.ok('已从上次会话恢复 ' + state.files.length + ' 个文件');
     DV.toast('已恢复上次的 ' + state.files.length + ' 个文件', '', 2200);
     return true;
@@ -1864,5 +1933,6 @@ window.DV = window.DV || {};
   window.DV.App = { state, select, step, ingest, refreshList, saveSession, closeFile, mergeSelected, splitMerged, setSelection, paintDoc, els,
     diag: () => { const it = active(); return it ? DV.Debug.emitReport(it) : ''; },
     seedWelcome, resetToFirstRun, applyEditMode, saveEdit, canEdit, isPlainView, domToText,
+    renderFile, restoreSession, saveSession, renderMerged,
     version: APP_VERSION, decodeBuffer, makeHexDecoder, detectRtfCodepage };
 })();

@@ -1445,6 +1445,82 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     S.set({ editMode: 'ro' });
   }
 
+  /* --- 场景 7o：拼接文档的会话往返（保存 → 恢复）--- */
+  {
+    const S = DV.Settings;
+    const keepFiles = App.state.files.slice();
+    const keepActive = App.state.activeId;
+    S.set({ editMode: 'ro' });
+    App.state.files.length = 0;
+    App.state.raw = false;
+
+    // 两个来源：一个 rtf、一个 md
+    const a = {
+      id: 'p1', name: 'a.rtf', path: '/tmp', fullPath: '/tmp/a.rtf',
+      text: '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fnil PingFangSC;}}\\f0\\fs24 第一段\\par}',
+      kind: 'rtf', encoding: 'GB18030/GBK', bytes: 60, lines: 1, chars: 10,
+    };
+    const b = {
+      id: 'p2', name: 'b.md', path: '/tmp', fullPath: '/tmp/b.md',
+      text: '# 标题\n\n正文', kind: 'md', encoding: 'UTF-8', bytes: 12, lines: 3, chars: 9,
+    };
+    [a, b].forEach(x => { App.renderFile(x); App.state.files.push(x); });
+    App.setSelection(['p1', 'p2']);
+    const merged = App.mergeSelected();
+    ok(!!merged && merged.merged === true, '拼接成功，得到拼接文档');
+    ok(App.state.files.length === 1, '拼接后列表里只剩合并视图');
+    ok((merged.html || '').indexOf('seg-head') >= 0, '合并视图生成了分段标题');
+    ok((merged.html || '').indexOf('seg-body') >= 0, '合并视图含各来源正文');
+
+    // 保存 → 清空 → 恢复
+    App.saveSession();
+    const saved = JSON.parse(localStorageData['docviewer.session']);
+    ok(saved.files.length === 1 && saved.files[0].merged === true, '会话里标记了 merged');
+    ok(Array.isArray(saved.files[0].parts) && saved.files[0].parts.length === 2,
+       '会话保存了 2 个来源：' + JSON.stringify((saved.files[0].parts || []).map(p => p.name)));
+    ok(saved.files[0].parts[0].text.indexOf('第一段') >= 0, '来源正文也存了下来');
+
+    App.state.files.length = 0;
+    const restoredOK = App.restoreSession();
+    ok(restoredOK === true, '会话恢复成功');
+    ok(App.state.files.length === 1, '恢复出 1 个条目（拼接文档）');
+    const r = App.state.files[0];
+    ok(r.merged === true, '恢复后仍是拼接文档（不是普通文件）');
+    ok((r.parts || []).length === 2, '恢复后 2 个来源都在');
+    ok((r.parts || []).every(p => p.html), '每个来源都重新解析出了 html');
+    ok((r.html || '').indexOf('seg-head') >= 0, '恢复后仍是合并视图（有分段标题）');
+    ok(r.kind === 'merged', 'kind 保持 merged');
+    App.select(r.id);
+    const doc = documentObj.getElementById('doc');
+    ok((doc.className || '').indexOf('merged') >= 0,
+       '恢复后按合并视图渲染，而不是纯文本源码：' + doc.className);
+    ok(doc.getAttribute('contenteditable') == null, '拼接文档仍不可编辑');
+
+    // 拆分仍然可用
+    App.splitMerged(App.state.files[0]);
+    ok(App.state.files.length === 2, '恢复后的拼接文档可以正常拆分');
+
+    // 旧格式（kind=merged 但没有 parts）应被跳过，而不是渲染成源码
+    {
+      localStorageData['docviewer.session'] = JSON.stringify({
+        v: 1, at: Date.now(), active: '旧拼接', wrap: true, raw: false,
+        files: [{ name: '旧拼接', path: '/x', kind: 'merged', text: '# ── a.rtf ──\n正文' }],
+      });
+      App.state.files.length = 0;
+      const okRestore = App.restoreSession();
+      ok(okRestore === false, '纯旧格式会话恢复返回 false（没有可恢复条目）');
+      ok(App.state.files.length === 0, '旧格式拼接文档没有进入列表（不再出现源码视图）');
+      App.saveSession();     // 还原一个正常会话
+    }
+
+
+    // 还原测试前的文件列表，别影响后续场景
+    App.state.files.length = 0;
+    keepFiles.forEach(f => App.state.files.push(f));
+    App.state.activeId = keepActive;
+    App.refreshList();
+  }
+
   /* --- 场景 8：会话持久化 --- */
   App.saveSession();
   ok(!!localStorageData['docviewer.session'], '会话已写入 localStorage');
