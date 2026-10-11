@@ -196,8 +196,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         var query: [String] = []
         var hash = ""
         func argValue(_ name: String) -> String? {
-            guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
-            return CommandLine.arguments[i + 1]
+            let args = CommandLine.arguments
+            // 两种写法都认：`--edit=rw` 和 `--edit rw`
+            if let eq = args.first(where: { $0.hasPrefix(name + "=") }) {
+                return String(eq.dropFirst(name.count + 1))
+            }
+            if let i = args.firstIndex(of: name), i + 1 < args.count, !args[i + 1].hasPrefix("--") {
+                return args[i + 1]
+            }
+            return nil
         }
         if let t = argValue("--theme") { query.append("theme=" + t) }
         if let l = argValue("--lang") { query.append("lang=" + l) }
@@ -242,6 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // 那时 webView 还是 nil。绝不能在这里直接访问 webView，也不能改 rootURL
         // —— rootURL 是网页资源的根目录，改了页面就加载不出来了。
         NSApp.reply(toOpenOrPrint: .success)
+        // 注意：直接启动可执行文件时 macOS 会把 --w 1100 这类「取值」也当成文件丢进来，
+        // 那种路径读不到。真正的防护在页面侧（每个文件单独超时），这里不筛选 ——
+        // 用 fileExists 过滤曾经把真文件一起滤掉，导致一个都不加载。
         let urls = filenames.map { URL(fileURLWithPath: $0) }
         guard !urls.isEmpty else { return }
         if webView == nil {
@@ -350,16 +360,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    private func postFiles(_ urls: [URL]) {
+    private func postFiles(_ urls: [URL], attempt: Int = 0) {
         let paths = urls.map { $0.path }
         let esc = paths.map { p -> String in
             let q = p.replacingOccurrences(of: "\\", with: "\\\\")
                        .replacingOccurrences(of: "\"", with: "\\\"")
             return "\"" + q + "\""
         }.joined(separator: ",")
-        let js = "window.__DV_NATIVE_FILES && window.__DV_NATIVE_FILES([" + esc + "])"
-        webView?.evaluateJavaScript(js) { _, err in
-            if let err = err { NSLog("inject files failed: \(err)") }
+        // 页面还没跑完 app.js 时 __DV_NATIVE_FILES 还不存在，直接调用会被静默丢掉，
+        // 表现就是「用命令行/拖到图标上打开，偶尔什么都没加载」。所以带返回值探测并重试。
+        let js = "(function(){ if (typeof window.__DV_NATIVE_FILES === 'function') {"
+            + " window.__DV_NATIVE_FILES([" + esc + "]); return true; } return false; })()"
+        webView?.evaluateJavaScript(js) { [weak self] result, err in
+            if let err = err {
+                NSLog("inject files failed: \(err)")
+                return
+            }
+            if let ok = result as? Bool, ok { return }
+            guard let self = self, attempt < 40 else {
+                NSLog("inject files gave up：页面始终没有出现 __DV_NATIVE_FILES")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.postFiles(urls, attempt: attempt + 1)
+            }
         }
     }
 

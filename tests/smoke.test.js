@@ -782,6 +782,52 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
   }
 
+  /* --- 场景 7c-9：保存状态常显 + 切文件不会把改动写到别的文件 --- */
+  {
+    const mk = (name, text) => ({
+      id: 'st-' + name, name: name, path: '', size: text.length,
+      kind: DV.kindOf(name), text: text, bytes: text.length,
+      file: { name: name, size: text.length, webkitRelativePath: '',
+              arrayBuffer: async () => new TextEncoder().encode(text).buffer },
+    });
+    await App.ingest([mk('状态A.txt', 'A'.repeat(120)), mk('状态B.txt', 'B'.repeat(120))],
+      { showProgress: false });
+    const A = App.state.files.find(f => f.name === '状态A.txt');
+    const B = App.state.files.find(f => f.name === '状态B.txt');
+    A.fullPath = path.join(ROOT, 'examples', 'sample-en.rtf');
+    B.fullPath = path.join(ROOT, 'examples', 'sample-gbk.rtf');
+    const sent = [];
+    windowObj.webkit = { messageHandlers: { dv: { postMessage: (m) => sent.push(m) } } };
+    const node = App.els.saveState;
+
+    // 只读：状态位隐藏（没什么可说的）
+    DV.Settings.set({ editMode: 'ro' });
+    App.select(A.id);
+    ok(node.hidden === true, '只读时保存状态隐藏');
+
+    // 可编辑：即使还没动手也显示「已保存」
+    DV.Settings.set({ editMode: 'rw' });
+    App.applyEditMode();
+    ok(node.hidden === false, '可编辑时保存状态常显');
+    ok(node.textContent === DV.t('已保存'), '显示「已保存」', node.textContent);
+
+    // 输入后立刻变「未保存」
+    App.els.doc.dispatch('input', {});
+    ok(node.textContent === DV.t('未保存'), '输入后显示「未保存」', node.textContent);
+
+    // 关键：改动还没写回就切文件，必须写回 A，不能写到 B
+    sent.length = 0;
+    App.select(B.id);
+    const wrote = sent.filter(m => m.action === 'writeFile');
+    ok(wrote.length === 1, '切文件前先把待写回的改动交出去', 'writes=' + wrote.length);
+    ok(wrote[0] && wrote[0].path === A.fullPath,
+       '写回的是原来那个文件（不是刚切过去的 B）', wrote[0] && wrote[0].path);
+
+    DV.Settings.set({ editMode: 'ro' });
+    delete windowObj.webkit;
+    App.closeFile(A.id); App.closeFile(B.id);
+  }
+
   /* --- 场景 7c-8：打字不会触发快捷键、写回不重绘、只读也记住位置 --- */
   {
     const mk = (name, text) => ({

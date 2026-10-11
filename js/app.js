@@ -654,10 +654,15 @@ window.DV = window.DV || {};
   function active() { return state.files.find(f => f.id === state.activeId) || null; }
 
   function select(id) {
-    // 离开当前文件前，把阅读位置记在它自己身上（只读模式下也一样记）
     const prev = active();
     if (prev && prev.id !== id) {
+      // 1) 把阅读位置记在离开的那个文件上（只读也一样记）
       try { prev.scrollTop = els.docScroll.scrollTop; } catch (e) { /* 忽略 */ }
+      // 2) 还有没写回的改动就先写回它自己。定时器是全局的，等它到点再切文件
+      //    会拿当前文件去写，等于把 B 的内容写进 A 的文件路径。
+      clearTimeout(saveTimer);
+      if (dirty && canEdit()) saveEdit();
+      dirty = false;
     }
     const item = state.files.find(f => f.id === id);
     if (!item) return;
@@ -1068,6 +1073,7 @@ window.DV = window.DV || {};
       doc.removeAttribute('contenteditable');
       doc.classList.remove('editing');
       document.body.removeAttribute('data-edit');
+      refreshSaveState();
       return;
     }
     const mode = tgt.plain && PLAIN_EDIT_OK ? 'plaintext-only' : 'true';
@@ -1082,6 +1088,7 @@ window.DV = window.DV || {};
       if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { try { doc.focus(); } catch (e) { } });
       else setTimeout(() => { try { doc.focus(); } catch (e) { } }, 0);
     }
+    refreshSaveState();
   }
 
   const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
@@ -1109,13 +1116,24 @@ window.DV = window.DV || {};
     saveTimer = setTimeout(() => { if (dirty) saveEdit(); }, AUTOSAVE_MS);   // 停手 1.5 分钟自动保存
   }
 
+  /**
+   * 状态栏右下角的保存状态。
+   * 可编辑（且能写回）时常显：未保存 / 保存中… / 已保存；
+   * 只读或该文件不可写回时隐藏（没什么可说的）。
+   */
   function setSaveState(kind) {
     const el = DV.$('#saveState');
     if (!el) return;
-    el.hidden = !kind;
-    el.textContent = kind === 'saving' ? DV.t('保存中…')
-      : kind === 'unsaved' ? DV.t('未保存') : DV.t('已保存');
-    el.className = 'sb-item save-state ' + (kind || '');
+    const show = kind || (canEdit() ? 'saved' : '');
+    el.hidden = !show;
+    el.textContent = show === 'saving' ? DV.t('保存中…')
+      : show === 'unsaved' ? DV.t('未保存') : DV.t('已保存');
+    el.className = 'sb-item save-state ' + (show || '');
+  }
+
+  /** 进入可编辑 / 切换文件后刷新一次状态显示 */
+  function refreshSaveState() {
+    setSaveState(dirty ? 'unsaved' : (canEdit() ? 'saved' : ''));
   }
 
   /** 纯文本视图 → 文本（保留换行；<br> 与块级元素都算换行） */
@@ -1170,6 +1188,7 @@ window.DV = window.DV || {};
   /** 原生写完后回传结果 */
   window.__DV_WRITE_RESULT = function (res) {
     if (!res || !res.ok) {
+      dirty = true;
       setSaveState('unsaved');
       DV.toast(DV.t('写入失败') + '：' + ((res && res.error) || '?'), 'err', 4200);
       DV.Log.error('写入失败：' + JSON.stringify(res));
@@ -1320,24 +1339,49 @@ window.DV = window.DV || {};
      WKWebView 里 evaluateJavaScript 调用 file input 不算用户手势，文件选择框会被
      拦截，所以原生菜单自己弹 NSOpenPanel，再把路径回传到这里。
      这些路径由外壳的 docviewer:// scheme 直接提供内容，因此可以 fetch。      */
-  window.__DV_NATIVE_FILES = function (paths) {
+  /**
+   * docviewer://local/<路径> —— 逐段做百分号编码。
+   * 直接拼中文路径时，WebKit 有时不替我们做规范化，fetch 会失败，
+   * 表现就是「路径里带中文的文件打不开」。
+   */
+  DV.localUrl = function (p) {
+    const abs = p.startsWith('/') ? p : '/' + p;
+    return 'docviewer://local' + abs.split('/').map(function (seg) {
+      try { return encodeURIComponent(decodeURIComponent(seg)); }
+      catch (e) { return encodeURIComponent(seg); }
+    }).join('/');
+  };
+
+
+window.__DV_NATIVE_FILES = function (paths) {
     if (!Array.isArray(paths) || !paths.length) return;
     const items = paths.map(p => {
       const name = DV.baseName(p);
       return {
         id: 'n' + (++uid), name, path: DV.dirName(p), fullPath: p, size: 0,
         kind: DV.kindOf(name), file: null,
-        _fetchUrl: 'docviewer://local' + (p.startsWith('/') ? p : '/' + p),
+        _fetchUrl: DV.localUrl(p),
       };
     });
     ingestNative(items);
   };
 
+  /** 带超时的 fetch：原生投递过来的路径里可能混着 --w 1100 这类"标志位取值"，
+      读不到时 fetch 会一直挂着，把后面真正要打开的文件全堵死。 */
+  function fetchWithTimeout(url, ms) {
+    if (typeof AbortController !== 'function') return fetch(url);
+    const ac = new AbortController();
+    const timer = setTimeout(function () { try { ac.abort(); } catch (e) { /* 忽略 */ } }, ms);
+    return fetch(url, { signal: ac.signal }).then(
+      function (r) { clearTimeout(timer); return r; },
+      function (e) { clearTimeout(timer); throw e; });
+  }
+
   async function ingestNative(items) {
     let ok = 0, fail = 0;
     for (const item of items) {
       try {
-        const res = await fetch(item._fetchUrl);
+        const res = await fetchWithTimeout(item._fetchUrl, 4000);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const buf = await res.arrayBuffer();
         const dec = decodeBuffer(buf, /\.rtf$/i.test(item.name) ? 'gbk' : '');
@@ -1353,6 +1397,7 @@ window.DV = window.DV || {};
       } catch (e) {
         fail++;
         DV.Log.error('原生选择读取失败 ' + item.name + '：' + e.message);
+        try { els.sbHint.textContent = 'FETCH FAIL: ' + e.message + ' | ' + item._fetchUrl; } catch (e2) { }
       }
     }
     if (ok) {
