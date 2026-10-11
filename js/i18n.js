@@ -114,7 +114,7 @@ DV.i18n = (function () {
     'RTF 按源文件换行': 'RTF honors source line breaks',
     '记住会话（下次打开恢复上次的文件）': 'Remember session (reopen last files)',
     '有些编辑器（如 macOS 文本编辑）导出的 RTF 用**裸换行**分段、不写': 'Some editors (e.g. macOS TextEdit) separate paragraphs with bare line breaks and write no',
-    '按 RTF 规范这算空白，会被合并成一整段 —— 打开这个开关就把裸换行当软换行处理。':
+    '按 RTF 规范这算空白，会被合并成一整段；打开这个开关就把裸换行当软换行处理。':
       'The RTF spec treats those as whitespace, merging everything into one paragraph. Turn this on to treat bare line breaks as soft breaks.',
     '语言': 'Language',
     '中文': '中文',
@@ -307,7 +307,7 @@ DV.i18n = (function () {
     '例如 Source Han Serif SC': 'e.g. Source Han Serif SC',
     'ms/帧': 'ms/frame',
     '· 诊断报告': '· Diagnostics',
-    '。\n            按 RTF 规范这算空白，会被合并成一整段 —— 打开这个开关就把裸换行当软换行处理。\n            切换后当前文档会自动重新解析。':
+    '。\n            按 RTF 规范这算空白，会被合并成一整段；打开这个开关就把裸换行当软换行处理。\n            切换后当前文档会自动重新解析。':
       'The RTF spec treats those as whitespace and merges everything into one paragraph. Turn this on to treat bare line breaks as soft breaks. The current document is re-parsed immediately.',
 
     /* ---- 提示语 ---- */
@@ -405,6 +405,16 @@ DV.i18n = (function () {
     "诊断报告已复制到剪贴板（也写进日志页）": "Diagnostic report copied to the clipboard (also written to the log page)",
     "诊断报告已写入日志页": "Diagnostic report written to the log page",
     "语言：中文": "Language: 中文",
+    /* ---- 保存按钮 / 自动保存间隔 ---- */
+    "保存": "Save",
+    "保存改动到源文件 (Ctrl+S)": "Save changes to the source file (Ctrl+S)",
+    "导出当前文件为 HTML": "Export the current file as HTML",
+    "把当前文档存成一份独立的 HTML 文件，方便分享或存档。": "Save the current document as a standalone HTML file for sharing or archiving.",
+    "当前不可编辑：设置里的「编辑」为只读，或这个文件不支持写回": "Not editable: Edit is set to read-only, or this file cannot be written back",
+    "没有需要保存的改动": "No changes to save",
+    "只读（默认）：正文不可编辑，没有光标，不会改动任何文件。 可编辑：光标可以放到正文任意位置直接修改，停手约 1.5 分钟后自动写回": "Read-only (default): the text cannot be edited, there is no caret, and no file is modified. Editable: put the caret anywhere and type; about 1.5 minutes after you stop, the change is written back to",
+    "（首次写入会生成 .bak 备份）。也可以随时点工具栏的「保存」或按": " (a .bak backup is created on the first write). You can also press Save in the toolbar or",
+    "立即写回。 RTF 会按文件自身的字体与字号重新生成。": "to write immediately. RTF is regenerated using the file’s own font and size.",
   };
 
   /* 让英文模式下也能查回中文（反向表） */
@@ -478,7 +488,11 @@ DV.i18n = (function () {
       if (n.__i18nSrc == null) n.__i18nSrc = n.nodeValue;
       const src = n.__i18nSrc;
       const key = src.trim();
-      const out = (which === 'en') ? (MAP[key] || key) : (REVERSE[key] || key);
+      // 多行文本节点（HTML 里的换行 + 缩进）也要能命中：先查原文，再查折叠空白的版本
+      const flat = key.replace(/\s+/g, ' ');
+      const out = (which === 'en')
+        ? (MAP[key] || MAP[flat] || key)
+        : (REVERSE[key] || REVERSE[flat] || key);
       n.nodeValue = src.replace(key, out);
     });
 

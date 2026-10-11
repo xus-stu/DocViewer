@@ -532,13 +532,13 @@ DV.Debug = (function () {
         const sectN = (raw.match(new RegExp(BS + 'sect(?![a-zA-Z])', 'g')) || []).length;
         const mdNl = item.kind === 'md' || item.kind === 'txt' || item.kind === 'code';
         line('源文件裸换行', nl + ' 个' + (mdNl ? '（文本类文件按原样保留）'
-          : (DV.Settings.get().rtfSoftWrap !== false ? '（已按换行处理）' : '，⚠️ 未开启"按源换行"）')));
+          : (DV.Settings.get().rtfSoftWrap !== false ? '（已按换行处理）' : '，未开启“按源换行”）')));
         line('源文件 \\par', parN + ' 个');
         line('源文件 \\line', lineN + ' 个');
         line('源文件 \\sect', sectN + ' 个');
         if (item.info) {
           if (!(item.info['硬换行 (\\par)'] > 0) && !item.info['软换行 (<br>)'])
-            L.push('  ⚠️ 没有检测到任何换行 —— 该 RTF 可能整篇只有一个段落');
+            L.push('  没有检测到任何换行，该 RTF 可能整篇只有一个段落');
           line('硬换行(\\par)', item.info['硬换行 (\\par)'] || '—');
           line('软换行(<br>)', item.info['软换行 (<br>)'] || '—');
           line('软分段(空行)', item.info['软分段 (空行)'] || '—');

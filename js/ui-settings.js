@@ -61,7 +61,7 @@ DV.SettingsUI = (function () {
       const useLatin = f.latin || DV.i18n.lang() === 'en';
       const sample = useLatin
         ? 'The quick brown fox jumps over the lazy dog'
-        : '永远相信美好的事情即将发生';
+        : '天地玄黄 宇宙洪荒 0123456789';
       card.innerHTML = '<b>' + DV.t(f.label) + '</b><small>' + DV.t(f.note) + '</small>' +
         '<div class="fc-sample" style="font-family:' + stack.replace(/"/g, '&quot;') + '">' + sample + '</div>';
       card.addEventListener('click', () => {

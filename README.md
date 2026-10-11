@@ -2,77 +2,14 @@
 
 # DocViewer
 
-**A zero-dependency offline reader for RTF, TXT and Markdown files — plus a native macOS `.app`.**
+An offline multi-file reader for RTF, TXT and Markdown, plus a native macOS app.
 
-[中文文档](README.zh-CN.md) · [Screenshots](#screenshots) · [Build](#build-the-macos-app)
+The front end is plain HTML, CSS and JavaScript and runs straight from `index.html`.
+A small Swift shell wraps it into an ordinary `.app` with a native window, a native file
+picker and the ability to write edits back to the source files.
 
-DocViewer is a small, dependency-free document reader. The whole front end is plain
-HTML + CSS + JavaScript and runs straight from `file://`; a ~500-line Swift shell wraps it
-into a real macOS application with a native file picker and the ability to write back to
-the files you edit.
-
-Nothing is ever uploaded. There is no build step, no bundler, no `node_modules`, and no
-third-party runtime code.
-
----
-
-## Features
-
-### Reading
-
-- **Remembers where you were.** Each file keeps its own scroll position: reopening a file
-  (or relaunching the app) returns to the last line you read instead of jumping to the top,
-  and writing an edit back no longer scrolls the view away. On by default; turn off with
-  *Settings → Documents → Remember the reading position of each file*.
-- **RTF, TXT, Markdown** and common **source / config files** (`.java`, `.kt`, `.py`, `.js`,
-  `.ts`, `.go`, `.rs`, `.c`, `.cpp`, `.cs`, `.swift`, `.rb`, `.php`, `.sh`, `.sql`,
-  `.html`, `.css`, `.json`, `.xml`, `.yml`, `.toml`, `.gradle`, `.properties`, …)
-- Multi-file: open many files, switch instantly, **merge several into one view** and split
-  them apart again (merge is display-only and never modifies the originals)
-- Hand-written **RTF parser** (no library): font/color tables, bold / italic / underline /
-  strike / super / sub, alignment and indents, tables, hyperlinks, `\uN` and `\'hh` escapes,
-  `\ucN` skip semantics, CP1252 quotes, `{\*\…}` destination skipping
-- Automatic **encoding detection** (UTF-8 / UTF-16 / GB18030 / Big5 / Shift-JIS / Latin-1)
-- **Source view** for every format, word wrap, in-document search with hit navigation
-- Sidebar, top title bar and every field in it can be shown, hidden or configured
-- **Focus mode** (`F11`) that strips everything but the text
-
-### Editing (opt-in, off by default)
-Read-only by default: no caret, no file is ever modified.
-
-Switch to **Editable** and the text becomes editable in place — put the caret anywhere and
-type. Changes are written back to the source file about 1.5 s after you stop typing, with a
-`.bak` copy on the first write.
-
-- **RTF** — edited as rich text, then serialized back to RTF using the font and size stored
-  in the file itself; the original font table and color table are preserved
-- **Text / source files** — edited as plain text, written back in the file's own encoding
-- **Markdown** — deliberately **not** editable: it always keeps its rendered view, so no
-  formatting can be lost
-
-### Appearance
-- Six themes: **Dark, Blue, Green, Light, Sepia, Custom** — the custom theme asks for four
-  base colors and derives the rest
-- Fonts: CJK-oriented presets plus **8 Western fonts** (Georgia, Times New Roman, Palatino,
-  Charter, Avenir Next, Helvetica Neue, Menlo, Courier New), or type your own
-- Accent color, text color and reading background can be tuned with swatches
-- Chinese / English UI, **all five theme palettes pass WCAG AA** (body ≥ 10:1, secondary
-  ≥ 7:1, faintest ≥ 5.5:1) with regression tests
-- Animation level (off / subtle / full) and speed, frame-rate cap up to 240 fps —
-  the animation loop is timer-driven, so caps above the display refresh rate actually work
-
-### Tooling
-- **F3 debug panel**: frame rate, time step, encoding detection, parse stats, break-source
-  analysis, DOM injection timings, environment probes
-- **Diagnostics report** for a file (encoding / break source / content integrity)
-- Built-in **first-run documentation** in two files: `README(EN).md` and `README(ZH).md`
-
-## Screenshots
-
-![DocViewer](docs/icon.png)
-
-> Screenshots are not checked in yet. Run the app (`./run.sh`) or build the `.app` below and
-> take a look — contributions of screenshots are welcome.
+There is no build step, no bundler, no `node_modules` and no third-party runtime code.
+Nothing is uploaded anywhere.
 
 ## Quick start
 
@@ -80,146 +17,257 @@ type. Changes are written back to the source file about 1.5 s after you stop typ
 git clone https://github.com/xus-stu/DocViewer.git
 cd DocViewer
 
-# Option A — just open it in a browser (no build step at all)
-open index.html          # or: ./run.sh
+open index.html                      # browser path, no build step
+# or
+./run.sh
 
-# Option B — build the native macOS app (WKWebView shell)
-bash packaging/mac/build_native.sh ~/Desktop
+# native macOS app
+./packaging/mac/build_native.sh ~/Desktop
 open ~/Desktop/DocViewer.app
 ```
 
-**Requirements**
+Requirements: any recent browser for the browser path; macOS with Xcode Command Line Tools
+(`swiftc`) for the native app; Python 3 with Pillow only if you want to regenerate the icon.
 
-- A browser with `IntersectionObserver` and `color-mix()` for the browser path (any recent
-  Safari / Chrome / Firefox)
-- macOS + Xcode **Command Line Tools** (`swiftc`) for the native app
-- Python 3 with Pillow — *only* if you want to regenerate the app icon
+---
 
-### Opening a file from the command line
+## Features
 
-`DocViewer <file>` and `open -a DocViewer <file>` both work. The native shell only treats a
-positional argument as the web root when that directory actually contains `index.html`;
-otherwise it always uses the bundled `web/`. (Earlier builds hijacked any positional argument
-as the root, so `DocViewer some.rtf` pointed the page at a folder with no `index.html` and the
-window came up blank.)
+### Files and browsing
 
-## Build the macOS app
+- `.rtf`, `.txt`, `.md`, and common source or config files (`.java`, `.kt`, `.py`, `.js`,
+  `.ts`, `.go`, `.rs`, `.c`, `.cpp`, `.cs`, `.swift`, `.rb`, `.php`, `.sh`, `.sql`,
+  `.html`, `.css`, `.json`, `.xml`, `.yml`, `.toml`, `.gradle`, `.properties`, …).
+  Source files are shown as plain text.
+- Open several files at once, import a folder recursively, or drag files and folders onto
+  the window.
+- The sidebar lists files with a type icon, size, type label, a delete button on hover and a
+  name filter. Selecting and switching only rewrites class names in place, so the list is
+  not rebuilt and no entry animation replays.
+- The sidebar can be collapsed on its own (`⌘B`, the `‹` button, or the settings panel) and
+  leaves a handle to bring it back. The state is remembered.
+- Session memory: reopening restores the previous file list and text. Each file can also
+  remember its own reading position.
 
-```bash
-bash packaging/mac/build_native.sh [输出目录]     # 默认 ~/Desktop
-```
+### Merging files
 
-This compiles `DocViewer.swift` + `AppendWriter.swift` with `swiftc`, copies the web assets
-into the bundle, installs `DocViewer.icns`, writes `Info.plist` and ad-hoc signs the result
-(`codesign --sign -`). No Xcode project, no `xcodebuild`.
+Several files can be combined into one reading view for cross-reading or comparison.
+The original files are never touched.
 
-Useful shell flags:
+1. Select two or more files in the sidebar (`Ctrl/⌘` click, `Shift` click, drag rows to reorder).
+2. Click "Merge into one" on the selection bar, or press `⌘M`.
+3. A merged entry appears and the source entries fold away. Nothing on disk changes.
 
-| Flag | Meaning |
-| --- | --- |
-| `--theme=<id>` | start with a given theme (`dark`/`blue`/`green`/`light`/`sepia`/`custom`) |
-| `--lang=zh\|en` | start in a given UI language |
-| `--edit=ro\|rw` | start read-only or editable |
-| `--fps=<n>` | frame-rate cap |
-| `--debug` / `--settings` | open the debug panel / settings on start |
-| `--w/--h`, `--x/--y`, `--br/--bl` | window size and position (default: 75 % of the screen, centred) |
-| `--wipe` | clear local data, as if launched for the first time |
+The merged view supports segment headings, jumping between segments (`Alt+←` / `Alt+→`),
+copying the combined text, exporting HTML, and splitting back into the original entries.
+Merges can be nested and can mix Markdown, text and RTF.
+
+A merged entry holds references to the original entries and builds its HTML at render time.
+It does not copy the text and does not write to disk. The session stores the sources as well,
+so after reopening the merged view still has its segments and can still be split.
+
+### Formats and encoding
+
+| Format | Handling |
+|--------|----------|
+| `.md` | Built-in renderer: headings, lists and task lists, tables, quotes, code blocks with language highlighting, links, images, rules, table of contents |
+| `.rtf` | Built-in parser: font and color tables, bold / italic / underline / strike, super and subscript, font sizes, foreground and background colors, alignment and indents, `\par` `\line` `\tab`, lists, simple tables, `\'hh` and `\uN` escapes |
+| others | Monospaced plain-text view |
+
+Encoding is detected by trying, in order: BOM, strict UTF-8, GB18030/GBK, Big5, Windows-1252.
+If everything fails the file is opened as non-fatal UTF-8, so a file always shows something
+instead of an error.
+
+RTF `\'hh` bytes follow the code page declared by the file:
+
+- `\ansicpg936` is decoded as GBK, 950 as Big5, 932 as Shift-JIS, 1252 as CP1252.
+- Without `\ansicpg`, the font table's `\fcharset` decides: 134 is treated as GBK,
+  136 as Big5, 0/1/2 as 1252.
+- If neither is present, 936 is assumed.
+- Under a multi-byte code page, bytes that do not form a valid sequence are dropped. They are
+  never reinterpreted as CP1252, which would turn a stray `\'97` in a cp936 file into an
+  em dash inside Chinese prose.
+
+Consecutive `\'hh` escapes are collected into a byte sequence and decoded as a whole, because
+GBK and Big5 are multi-byte encodings and per-byte decoding only produces U+FFFD.
+
+### Editing (off by default)
+
+The default mode is read-only: no caret, and no file is ever modified. Switching to
+**Editable** makes the text editable in place; about 1.5 minutes after you stop typing the
+change is written back to the source file. You can also press `⌘S` or click **Save** in the
+toolbar to write immediately. A `.bak` copy is created on the first write.
+
+- RTF is edited as rich text and serialized back on save. The font table, color table and
+  stylesheet at the top of the file are preserved, the body reuses the file's own `\fN` /
+  `\fsN`, and Chinese is written as `\uN?`.
+- Text and source files are edited as plain text and written back in the file's own encoding.
+- Markdown is not editable and always keeps its rendered view.
+
+### Appearance and settings (`⌘,`)
+
+| Group | Contents |
+|-------|----------|
+| Language | Chinese / English. Interface text, status bar and debug panel labels all follow. |
+| Theme | Dark, Blue, Green, Light, Sepia and Custom, applied as a whole set |
+|  | Custom takes four base colors (background, panel, text, accent) and derives the rest with `color-mix()` |
+|  | Accent color, text color and reading background can each be picked from eight swatches; the reading background only affects the reading area |
+|  | Body, secondary and faintest text of all five palettes pass WCAG AA, with regression tests |
+| Fonts | System, Songti, Kaiti, Heiti, Yuanti, monospace, custom, plus eight Western fonts |
+| Typography | Font size 11–30px, line height 1.3–2.6, column width 520–1200px, padding 0–80px, all live |
+| Documents | Remember session, remember the reading position of each file, use the reader's font and size for RTF, follow the source line breaks in RTF |
+| Editing | Read-only / editable, `⌘⇧A` to switch, `⌘S` to save |
+| Title bar | Whether to show the top title bar, and which fields appear under the file name (path, size, encoding, type, lines, characters) |
+| Focus mode | Toggle and column width |
+| Animation and frame rate | Animation level, speed, frame-rate cap, plus live readings |
+| Tools | Debug panel, diagnostics report, export the current file as HTML, reset to defaults |
+
+Settings live in `localStorage` and the panel has a **Reset**. Visual settings are written as
+CSS custom properties and `body[data-*]` attributes, so theme, font and colors combine freely
+and switching them never rebuilds the document.
+
+**Remember the reading position of each file** is on by default: reopening a file, or
+restarting the app, returns to where you left off, and repainting after a write-back stays in
+place. Turning it off always starts at the top.
+
+### Focus mode (`F11` / `⌘I`)
+
+Hides the title bar, sidebar, toolbar and status bar and leaves only the text with extra
+vertical padding. Moving the mouse reveals a floating control strip (progress, previous and
+next file, font size, exit) that fades after 2.2 seconds. `Esc`, `F11`, `⌘I` or the exit
+button all return.
+
+### F3 debug panel
+
+Press `F3` (or `⌘D`, `F12`) to open the right-hand drawer. Four tabs:
+
+| Tab | Contents |
+|-----|----------|
+| Performance | Frame-rate graph, display refresh rate, average frame interval, worst frame, dropped frames, scheduler probe, render time, DOM node count, JS heap usage, page uptime |
+| Document | Name, path, type, bytes, encoding, lines, characters, parse and injection timings, view mode, font size and wrap state, parser warnings |
+| Environment | User agent, language, platform, CPU threads, window and screen size, DPR, color depth, Web API support, GBK decoding, startup and ready timings |
+| Log | Timestamped, leveled log with auto-scroll, copy and clear |
+
+On frame rates: `requestAnimationFrame` is tied to the display refresh rate, so a 60Hz screen
+only produces 60fps. The animation loop is therefore driven by `setTimeout(1000/cap)` while
+`requestAnimationFrame` only samples the delivered rate. The 120, 180 and 240 caps really do
+run at those intervals; the screen still shows about 60 images per second and the benefit is
+a finer time step for easing and scrolling. Measured CPU use was 7.9% at 60fps and 8.1% at
+240fps.
+
+---
 
 ## Keyboard shortcuts
 
 | Keys | Action |
-| --- | --- |
-| `F3` | Debug panel |
-| `Ctrl/⌘ + B` | Show / hide the sidebar |
-| `Ctrl/⌘ + ,` | Settings |
-| `Ctrl/⌘ + F` | Search in the document |
-| `Ctrl/⌘ + E` | Toggle source / rendered view |
-| `Ctrl/⌘ + Shift + A` | Switch between read-only and editable |
-| `Ctrl/⌘ + S` | Save now when editable, otherwise export |
-| `F11` / `Ctrl + I` | Focus mode |
-| `J` / `K` or `↓` / `↑` | Next / previous file |
-| `Ctrl/⌘ + A`, `Ctrl/⌘ + M` | Select all, merge selection |
-| `Ctrl/⌘ + Shift + D` | Diagnostics report |
-| `Ctrl/⌘ + Shift + R` | Hard refresh |
+|------|--------|
+| `F3` / `⌘D` / `F12` | Debug panel |
+| `⌘,` | Settings panel |
+| `⌘B` | Show or hide the sidebar |
+| `⌘F` | Search in the document, `Enter` / `Shift+Enter` for next / previous hit |
+| `⌘E` | Toggle source and rendered view |
+| `⌘S` | Save changes to the source file (editable mode only) |
+| `⌘⇧A` | Switch between read-only and editable |
+| `⌘O` | Open files |
+| `⌘A` / `⌘M` | Select all / merge the selection |
+| `⌘+` / `⌘-` / `⌘0` | Font size up / down / reset |
+| `F11` / `⌘I` | Enter or leave focus mode |
+| `N` / `Alt+↓` / `Alt+↑` | Next / previous file |
+| `Alt+←` / `Alt+→` | Previous / next segment in a merged document |
+| `⌘⇧D` | Diagnostics report |
+| `⌘⇧R` | Hard refresh |
+| `Esc` | Close a panel or clear the selection |
+
+## Command line
+
+| Flag | Meaning |
+|------|---------|
+| `--theme=<id>` | Start with `dark`, `blue`, `green`, `light`, `sepia` or `custom` |
+| `--lang=zh\|en` | Interface language |
+| `--edit=ro\|rw` | Start read-only or editable |
+| `--fps=<n>` | Frame-rate cap |
+| `--w/--h`, `--x/--y`, `--br/--bl` | Window size and position; the default is 75% of the screen, centered |
+| `--debug` / `--settings` | Open the debug panel or settings on start |
+| `--wipe` | Clear local data, as if launched for the first time |
+
+A document path can be given directly, and `open -a DocViewer <file>` works too. The native
+shell only treats a positional argument as the web root when that directory actually contains
+`index.html`; otherwise it always uses the bundled `web/`.
+
+---
 
 ## Project structure
 
 ```
 index.html              single-page shell (title bar / sidebar / content / debug drawer)
-css/hmcl.css            themes (6 palettes) + all component styles
-js/util.js              namespace, lucide icons, DOM helpers, formatting, logger
-js/i18n.js              Chinese ↔ English dictionary + DOM re-translation
+css/hmcl.css            theme variables and all component styles
+js/util.js              namespace, inline icons, formatting, toasts, leveled log
+js/i18n.js              Chinese/English dictionary and DOM re-translation
 js/welcome.js           the two built-in first-run documents
-js/frames.js            frame scheduler (timer-driven animation + rAF display sampling)
+js/frames.js            frame scheduler (timer-driven animation, rAF sampling)
 js/settings.js          settings model, persistence, theme derivation
-js/md.js                small Markdown renderer (no dependencies)
-js/rtf.js               RTF parser + RTF serializer (for writing back)
-js/debug.js             F3 panel: metrics, probes, diagnostics
-js/ui-settings.js       settings panel, theme grid, immersive mode
-js/app.js               file list, decoding, rendering, merge, editing, shortcuts
-packaging/mac/          Swift shell (WKWebView + custom scheme handler) and build script
-packaging/make_icon.py  generates the whole .icns from code
-tests/                  Node test suites (parser + end-to-end) and the native writer test
-examples/               small sample files
+js/md.js                Markdown renderer
+js/rtf.js               RTF parser and the serializer used for write-back
+js/debug.js             F3 panel
+js/ui-settings.js       settings panel and focus mode
+js/app.js               file list, decoding, rendering, merging, editing, shortcuts
+examples/               sample files
+packaging/mac/          Swift shell and build script
+packaging/make_icon.py  generates the whole icon set
+tests/                  Node test suites and the native writer test
 ```
 
 ## Tests
 
-No test framework — plain Node scripts with a hand-written mini-DOM, so the real
-`app.js` / `rtf.js` / `settings.js` are exercised end to end.
-
 ```bash
-node tests/parse.test.js      # RTF/Markdown parser          (81 assertions)
-node tests/smoke.test.js      # whole app through a DOM shim (329 assertions)
+node tests/parse.test.js      # parser            (81 assertions)
+node tests/smoke.test.js      # whole app         (372 assertions)
 
-# native file-writer test (real files on disk)
+# native writer test, operates on real files
 cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
   && swiftc -O AppendWriter.swift /tmp/main.swift -o /tmp/write_test && /tmp/write_test
 ```
 
-The suites cover parser edge cases (CP1252 quotes, `\ucN` skip semantics, multi-byte
-`\'hh`, tables, soft breaks), the whole UI (file list, selection, merge/split, settings,
-themes, i18n coverage, contrast ratios, editing rules) and the native writer (encoding
-round-trips, backups, RTF byte preservation).
+No test framework: plain Node scripts. `smoke.test.js` contains a hand-written mini-DOM, so
+the real `app.js` runs inside Node and the suite covers startup, import, switching, search,
+merge and split, session persistence, encoding detection, editing rules, theme contrast and
+translation coverage. The native test covers encoding round-trips, backups and RTF byte
+preservation.
 
-## Encoding rules for RTF `\'hh` bytes
+## Implementation notes
 
-The **declared code page wins**: `\ansicpg936` is decoded as GBK (950 → Big5, 932 → Shift-JIS).
-Without `\ansicpg`, the font table's `\fcharset` decides (134 → GBK, 136 → Big5, 0/1/2 → 1252),
-and only then does it fall back to 936.
-
-When a multi-byte code page is declared, bytes that do not form a valid sequence are **dropped** —
-they are never silently reinterpreted through CP1252. Otherwise a stray `\'97` in a cp936 file
-would turn into an em dash and slip into the middle of Chinese prose.
-
-## Design notes
-
-- **Zero dependencies, no build step.** Open `index.html` and it runs. Everything the app
-  needs is in the repository.
-- **The native shell serves the page over a custom scheme** (`docviewer://`) so the web
-  assets can be read from the bundle, and resource responses carry
-  `Cache-Control: no-store` — editing CSS/JS takes effect on the next launch instead of
-  being served from a stale WebKit cache.
-- **High frame rates need a timer.** `requestAnimationFrame` is vsync-locked, so the
-  animation loop is driven by `setTimeout(1000/cap)` while rAF is only used to *sample* the
-  display rate. Caps of 120/180/240 fps genuinely run; the display still shows ~60 images
-  per second, and the benefit is a finer time step for easing and scrolling.
-- **Editing writes whole files, atomically**, after keeping a `.bak`. RTF is regenerated
-  from the original preamble plus a re-serialized body, so the file's own font table,
-  color table and encoding survive.
-- **Text contrast is a tested property**, not a hope: every theme palette is asserted
-  against WCAG AA in the smoke suite.
+- The window takes 75% of the screen and is centered. `setFrameAutosaveName` is not used, so
+  an old frame cannot override the default.
+- On first run, with no local data, two built-in documents are loaded: `README(EN).md` and
+  `README(ZH).md`.
+- The native shell registers the `docviewer://` scheme and serves the bundled assets through
+  a `WKURLSchemeHandler`. Responses carry `Cache-Control: no-store` and the WebKit caches are
+  cleared on launch, so edited CSS or JavaScript is not served from a stale cache.
+- A merged entry only holds references and builds its HTML at render time. Selecting or
+  checking files rewrites class names instead of rebuilding the list.
+- The RTF parser splits text runs whenever the style signature changes or a group closes.
+  `\pntext` only writes an internal marker; the `<ul><li>` structure is created when the text
+  is flushed.
+- RTF line breaks: real files often contain no `\par` at all, only the editor's hard wrapping
+  and bare newlines. Every source line break is emitted as `<br>` by default, and the setting
+  "follow the source line breaks in RTF" switches back to the strict behavior.
+- The first color table entry in RTF is empty and means automatic. The parser stores it as
+  `null` and emits no color, so the text follows the reader palette. Colors with less than
+  3:1 contrast against the reading background also fall back to the reader palette.
+- Markdown lists are parsed into a tree before rendering, which avoids invalid nesting from
+  string post-processing.
 
 ## Known limitations
 
-- RTF support covers the common subset produced by TextEdit / WordPad / Word; complex
-  fields, footnotes, embedded objects and revision marks are ignored rather than rendered.
-- Markdown rendering is intentionally small (headings, emphasis, code, lists, quotes,
-  tables, links, task lists) — it is a reader, not a CommonMark implementation.
-- A CP1252 escape pair can coincidentally form a valid CJK byte sequence; the declared
-  code page wins (`\'93\'94` is ambiguous and is decoded as such).
-- The macOS app is ad-hoc signed, so Gatekeeper will warn on first launch
-  (right-click → Open, or `xattr -dr com.apple.quarantine`).
+- RTF covers the common subset produced by TextEdit, WordPad and Word. Fields, footnotes,
+  headers and footers, embedded images and revision marks are skipped.
+- RTF tables only restore basic rows and columns; border styles and merged cells are ignored.
+- The Markdown renderer is deliberately small and does not resolve reference-style link
+  definitions or math.
+- Persistence keeps up to 400 KB per file and 4 MB per session; anything beyond that stays in
+  memory only.
+- The macOS app is ad-hoc signed, so Gatekeeper warns on first launch. Right-click and choose
+  Open, or run `xattr -dr com.apple.quarantine`.
 
 ## License
 

@@ -782,6 +782,52 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
   }
 
+  /* --- 场景 7c-7：自动保存间隔 1.5 分钟 + 工具栏「保存」按钮 --- */
+  {
+    ok(App.autosaveMs === 90000, '自动保存间隔是 1.5 分钟（90 秒）', String(App.autosaveMs));
+    ok(typeof App.manualSave === 'function', '「保存」动作已导出');
+
+    // 工具栏：导出换成保存；导出挪进了设置
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    ok(/id="btnSave"/.test(html) && !/id="btnDownload"/.test(html),
+       '工具栏按钮：导出 → 保存（btnDownload 已移除）');
+    ok(/id="setExport"/.test(html), '导出为 HTML 挪到了设置里');
+
+    const mk = (name, text) => ({
+      id: 'save-' + name, name: name, path: '', size: text.length,
+      kind: DV.kindOf(name), text: text, bytes: text.length,
+      file: { name: name, size: text.length, webkitRelativePath: '',
+              arrayBuffer: async () => new TextEncoder().encode(text).buffer },
+    });
+    await App.ingest([mk('保存测试.txt', '第一行\n第二行\n')], { showProgress: false });
+    const f = App.state.files.find(x => x.name === '保存测试.txt');
+    ok(!!f, '保存测试文件已导入');
+    App.select(f.id);
+
+    // 只读（默认）：manualSave 不写文件，只提示
+    DV.Settings.set({ editMode: 'ro' });
+    App.applyEditMode();
+    ok(App.canEdit() === false, '只读时 canEdit 为假');
+    ok(App.manualSave() === false, '只读时「保存」不写文件');
+
+    // 可编辑但没有改动：同样不写；要能写回需要绝对路径 + 原生桥
+    f.fullPath = path.join(ROOT, 'examples', 'sample-en.rtf');
+    windowObj.webkit = { messageHandlers: { dv: { postMessage: () => { } } } };
+    DV.Settings.set({ editMode: 'rw' });
+    App.applyEditMode();
+    ok(App.canEdit() === true, '可编辑 + 有路径 + 有原生桥 → canEdit 为真');
+    ok(App.manualSave() === false, '没有改动时「保存」不写文件');
+
+    // 有改动：manualSave 会真的走一次写回（原生桥被 stub，只看它不再返回 false）
+    App.els.doc.dispatch('input', {});
+    ok(App.manualSave() === true, '有改动时「保存」执行写回');
+    ok(documentObj.getElementById('saveState') !== null, '状态栏有保存状态位');
+
+    delete windowObj.webkit;
+    DV.Settings.set({ editMode: 'ro' });
+    App.closeFile(f.id);
+  }
+
   /* --- 场景 7c-6：阅读位置记忆（切换文件 / 关闭设置 / 写回后重绘）--- */
   {
     const mk = (name, text) => ({

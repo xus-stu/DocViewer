@@ -1067,13 +1067,28 @@ window.DV = window.DV || {};
     }
   }
 
+  const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
   let saveTimer = 0, dirty = false, wantFocus = false;
+
+  /** 手动保存（工具栏「保存」/ ⌘S）：只读或没有改动时给出提示，不写文件 */
+  function manualSave() {
+    if (!canEdit()) {
+      DV.toast(DV.t('当前不可编辑：设置里的「编辑」为只读，或这个文件不支持写回'), 'warn', 2800);
+      return false;
+    }
+    if (!dirty) {
+      DV.toast(DV.t('没有需要保存的改动'), '', 1600);
+      return false;
+    }
+    clearTimeout(saveTimer);
+    return saveEdit();
+  }
 
   function markDirty() {
     dirty = true;
     setSaveState('unsaved');
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { if (dirty) saveEdit(); }, 1500);   // 停手 1.5 秒自动保存
+    saveTimer = setTimeout(() => { if (dirty) saveEdit(); }, AUTOSAVE_MS);   // 停手 1.5 分钟自动保存
   }
 
   function setSaveState(kind) {
@@ -1535,7 +1550,8 @@ window.DV = window.DV || {};
     });
 
     /* 导出 */
-    $('#btnDownload').addEventListener('click', exportHtml);
+    $('#btnSave').addEventListener('click', manualSave);
+    { const ex = $('#setExport'); if (ex) ex.addEventListener('click', exportHtml); }
 
     /* 解析类设置变化 → 重新解析当前文档（换行处理等） */
     DV.Settings.on((cfg, keys) => {
@@ -1986,6 +2002,7 @@ window.DV = window.DV || {};
 
   // 暴露给调试
   window.DV.App = { state, select, step, ingest, refreshList, saveSession, closeFile, mergeSelected, splitMerged, setSelection, paintDoc, els,
+    autosaveMs: AUTOSAVE_MS, manualSave,
     diag: () => { const it = active(); return it ? DV.Debug.emitReport(it) : ''; },
     seedWelcome, resetToFirstRun, applyEditMode, saveEdit, canEdit, isPlainView, domToText,
     renderFile, restoreSession, saveSession, renderMerged,
