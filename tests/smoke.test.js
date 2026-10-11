@@ -782,6 +782,74 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
   }
 
+  /* --- 场景 7c-8：打字不会触发快捷键、写回不重绘、只读也记住位置 --- */
+  {
+    const mk = (name, text) => ({
+      id: 'k-' + name, name: name, path: '', size: text.length,
+      kind: DV.kindOf(name), text: text, bytes: text.length,
+      file: { name: name, size: text.length, webkitRelativePath: '',
+              arrayBuffer: async () => new TextEncoder().encode(text).buffer },
+    });
+    await App.ingest([mk('按键A.txt', 'A'.repeat(400)), mk('按键B.txt', 'B'.repeat(400))],
+      { showProgress: false });
+    const A = App.state.files.find(f => f.name === '按键A.txt');
+    const B = App.state.files.find(f => f.name === '按键B.txt');
+    App.select(A.id);
+    const body = documentObj.body;
+    const press = (key, extra) => windowObj.dispatch('keydown', Object.assign({
+      key: key, preventDefault() { }, target: body,
+      ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+    }, extra || {}));
+
+    // 1) 编辑时打字不该切文件：以前 N 键（无修饰）会跳到下一个文件
+    ok(App.state.activeId === A.id, '开始前停在文件 A');
+    press('n'); press('j'); press('k'); press('a');
+    press('ArrowDown', { altKey: true }); press('ArrowUp', { altKey: true });
+    ok(App.state.activeId === A.id, '打字（n / j / k / a / Alt+方向）不会切换文件');
+
+    // 2) 其它旧快捷键都不再动作
+    const before = App.state.activeId;
+    press('b', { ctrlKey: true });                       // 原 Ctrl+B
+    press('o', { ctrlKey: true });                       // 原 Ctrl+O
+    press('e', { ctrlKey: true });                       // 原 Ctrl+E
+    press('s', { ctrlKey: true });                       // 原 Ctrl+S（绝不能触发保存）
+    press('F11');                                        // 原沉浸
+    ok(App.state.activeId === before, '旧快捷键不再改变当前文件');
+
+    // 3) 写回只改数据，不重绘文档（重绘会把滚动位置弹回顶部、丢掉光标）
+    A.fullPath = path.join(ROOT, 'examples', 'sample-en.rtf');
+    windowObj.webkit = { messageHandlers: { dv: { postMessage: () => { } } } };
+    DV.Settings.set({ editMode: 'rw' });
+    App.applyEditMode();
+    const sc = documentObj.getElementById('docScroll');
+    sc.scrollTop = 333;
+    App.els.doc.innerHTML = '<p id="local-edit">正在编辑的内容</p>';
+    App.els.doc.dispatch('input', {});
+    ok(App.manualSave() === true, '有改动时「保存」执行写回');
+    windowObj.__DV_WRITE_RESULT({ ok: true, path: A.fullPath });
+    ok(App.els.doc.innerHTML.indexOf('local-edit') >= 0,
+       '写回后文档没有被重新渲染（编辑内容原地保留）');
+    ok(sc.scrollTop === 333, '写回后滚动位置不变', 'scrollTop=' + sc.scrollTop);
+    ok(typeof A.chars === 'number' && typeof A.lines === 'number', '写回后条目数据已刷新');
+    ok(App.els.saveState.textContent === DV.t('已保存'), '状态栏显示已保存',
+       'saveState=' + App.els.saveState.textContent);
+
+    // 4) 只读模式下切换文件也要回到上次看到的位置
+    DV.Settings.set({ editMode: 'ro', rememberScroll: true });
+    App.applyEditMode();
+    App.select(B.id);
+    sc.scrollTop = 211;                                   // 不派发 scroll 事件，模拟"没来得及记录"
+    App.select(A.id);
+    ok(B.scrollTop === 211, '离开文件时会记住当时的位置', 'scrollTop=' + B.scrollTop);
+    sc.scrollTop = 145;
+    App.select(B.id);
+    App.select(A.id);
+    ok(sc.scrollTop === 145, '只读模式切回来仍在原位置', 'scrollTop=' + sc.scrollTop);
+
+    delete windowObj.webkit;
+    App.closeFile(A.id); App.closeFile(B.id);
+  }
+
   /* --- 场景 7c-7：自动保存间隔 1.5 分钟 + 工具栏「保存」按钮 --- */
   {
     ok(App.autosaveMs === 90000, '自动保存间隔是 1.5 分钟（90 秒）', String(App.autosaveMs));
@@ -1049,12 +1117,14 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     ok(true, '进度条更新不抛异常');
     documentObj.getElementById('immExit').dispatch('click');
     ok(body.classList.contains('immersive') === false, '退出沉浸式阅读');
-    // F11 快捷键
+    // F11 / Esc 快捷键已按用户要求移除：只剩 F3
     windowObj.dispatch('keydown', { key: 'F11', preventDefault() { }, target: body, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
-    ok(body.classList.contains('immersive') === true, 'F11 可进入沉浸');
-    windowObj.dispatch('keydown', { key: 'Escape', preventDefault() { }, target: body, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
-    ok(body.classList.contains('immersive') === false, 'Esc 退出沉浸',
-       'immersive=' + body.classList.contains('immersive') + ' settingsOpen=' + UI.isOpen());
+    ok(body.classList.contains('immersive') === false, 'F11 不再进入沉浸（快捷键已移除）');
+    const immBtn = documentObj.getElementById('btnImmersive');
+    immBtn.dispatch('click');
+    ok(body.classList.contains('immersive') === true, '工具栏「沉浸」按钮仍可进入');
+    immBtn.dispatch('click');
+    ok(body.classList.contains('immersive') === false, '再点一次退出沉浸');
 
     // 设置持久化
     ok(!!localStorageData['docviewer.settings.v1'], '设置已写入 localStorage');
@@ -1101,13 +1171,14 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     ok(!appEl.classList.contains('no-side'), '展开侧栏');
     ok(handle.hidden === true, '展开后把手隐藏');
 
-    // 快捷键 Ctrl+B
+    // Ctrl+B 已移除，收起改由侧栏顶部按钮完成
     windowObj.dispatch('keydown', { key: 'b', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
       preventDefault() { }, target: documentObj.body });
-    ok(appEl.classList.contains('no-side'), 'Ctrl+B 可收起侧栏');
-    windowObj.dispatch('keydown', { key: 'b', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
-      preventDefault() { }, target: documentObj.body });
-    ok(!appEl.classList.contains('no-side'), 'Ctrl+B 可再次展开');
+    ok(!appEl.classList.contains('no-side'), 'Ctrl+B 不再收起侧栏（快捷键已移除）');
+    documentObj.getElementById('btnSidebar').dispatch('click');
+    ok(appEl.classList.contains('no-side'), '侧栏顶部按钮可收起');
+    documentObj.getElementById('sideHandle').dispatch('click');
+    ok(!appEl.classList.contains('no-side'), '把手可再次展开');
   }
 
   /* --- 场景 7h：动效 —— 关闭可用、速度可调、高亮常驻 --- */

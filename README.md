@@ -95,8 +95,9 @@ GBK and Big5 are multi-byte encodings and per-byte decoding only produces U+FFFD
 
 The default mode is read-only: no caret, and no file is ever modified. Switching to
 **Editable** makes the text editable in place; about 1.5 minutes after you stop typing the
-change is written back to the source file. You can also press `⌘S` or click **Save** in the
-toolbar to write immediately. A `.bak` copy is created on the first write.
+change is written back to the source file. You can also click **Save** in the toolbar to write
+immediately. A `.bak` copy is created on the first write. Writing back never re-renders the
+document, so the scroll position and the caret stay where they are.
 
 - RTF is edited as rich text and serialized back on save. The font table, color table and
   stylesheet at the top of the file are preserved, the body reuses the file's own `\fN` /
@@ -116,7 +117,7 @@ toolbar to write immediately. A `.bak` copy is created on the first write.
 | Fonts | System, Songti, Kaiti, Heiti, Yuanti, monospace, custom, plus eight Western fonts |
 | Typography | Font size 11–30px, line height 1.3–2.6, column width 520–1200px, padding 0–80px, all live |
 | Documents | Remember session, remember the reading position of each file, use the reader's font and size for RTF, follow the source line breaks in RTF |
-| Editing | Read-only / editable, `⌘⇧A` to switch, `⌘S` to save |
+| Editing | Read-only / editable; the switch and the Save button live in the settings panel and toolbar |
 | Title bar | Whether to show the top title bar, and which fields appear under the file name (path, size, encoding, type, lines, characters) |
 | Focus mode | Toggle and column width |
 | Animation and frame rate | Animation level, speed, frame-rate cap, plus live readings |
@@ -127,15 +128,16 @@ CSS custom properties and `body[data-*]` attributes, so theme, font and colors c
 and switching them never rebuilds the document.
 
 **Remember the reading position of each file** is on by default: reopening a file, or
-restarting the app, returns to where you left off, and repainting after a write-back stays in
-place. Turning it off always starts at the top.
+restarting the app, returns to where you left off, in read-only mode as well. Writing back
+never re-renders the document, so the position and the caret are left alone. Turning the
+setting off always starts at the top.
 
-### Focus mode (`F11` / `⌘I`)
+### Focus mode
 
 Hides the title bar, sidebar, toolbar and status bar and leaves only the text with extra
 vertical padding. Moving the mouse reveals a floating control strip (progress, previous and
-next file, font size, exit) that fades after 2.2 seconds. `Esc`, `F11`, `⌘I` or the exit
-button all return.
+next file, font size, exit) that fades after 2.2 seconds. Use its exit button, or the Focus
+button in the toolbar, to return.
 
 ### F3 debug panel
 
@@ -159,24 +161,15 @@ a finer time step for easing and scrolling. Measured CPU use was 7.9% at 60fps a
 
 ## Keyboard shortcuts
 
-| Keys | Action |
-|------|--------|
-| `F3` / `⌘D` / `F12` | Debug panel |
-| `⌘,` | Settings panel |
-| `⌘B` | Show or hide the sidebar |
-| `⌘F` | Search in the document, `Enter` / `Shift+Enter` for next / previous hit |
-| `⌘E` | Toggle source and rendered view |
-| `⌘S` | Save changes to the source file (editable mode only) |
-| `⌘⇧A` | Switch between read-only and editable |
-| `⌘O` | Open files |
-| `⌘A` / `⌘M` | Select all / merge the selection |
-| `⌘+` / `⌘-` / `⌘0` | Font size up / down / reset |
-| `F11` / `⌘I` | Enter or leave focus mode |
-| `N` / `Alt+↓` / `Alt+↑` | Next / previous file |
-| `Alt+←` / `Alt+→` | Previous / next segment in a merged document |
-| `⌘⇧D` | Diagnostics report |
-| `⌘⇧R` | Hard refresh |
-| `Esc` | Close a panel or clear the selection |
+One shortcut:
+
+| Key | Action |
+|-----|--------|
+| `F3` | Open or close the debug panel |
+
+Everything else is a button in the interface (toolbar, top of the sidebar, settings panel), so
+typing in the document can never trigger an action by accident. The old unmodified keys were
+removed for that reason: a single `n` used to jump to the next file.
 
 ## Command line
 

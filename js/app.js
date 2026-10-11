@@ -654,6 +654,11 @@ window.DV = window.DV || {};
   function active() { return state.files.find(f => f.id === state.activeId) || null; }
 
   function select(id) {
+    // 离开当前文件前，把阅读位置记在它自己身上（只读模式下也一样记）
+    const prev = active();
+    if (prev && prev.id !== id) {
+      try { prev.scrollTop = els.docScroll.scrollTop; } catch (e) { /* 忽略 */ }
+    }
     const item = state.files.find(f => f.id === id);
     if (!item) return;
     state.activeId = id;
@@ -667,6 +672,16 @@ window.DV = window.DV || {};
     applyEditMode();
     saveSession();
     DV.Log.info('打开文件：' + item.name + '（' + (item.encoding || '?') + '，' + DV.fmtBytes(item.bytes || item.size) + '）');
+  }
+
+  /** 立即设置滚动位置：临时关掉 scroll-behavior:smooth，避免恢复位置时先滚一段动画 */
+  function setScrollTopNow(el, v) {
+    try {
+      const prev = el.style && el.style.scrollBehavior;
+      if (el.style) el.style.scrollBehavior = 'auto';
+      el.scrollTop = v;
+      if (el.style) el.style.scrollBehavior = prev || '';
+    } catch (e) { try { el.scrollTop = v; } catch (e2) { /* 忽略 */ } }
   }
 
   function paintDoc(item, opts) {
@@ -732,12 +747,14 @@ window.DV = window.DV || {};
       ? liveScrollTop
       : (remember ? (Number(item.scrollTop) || 0) : 0);
     if (target > 0) {
-      els.docScroll.scrollTop = target;
+      setScrollTopNow(els.docScroll, target);
       // 图片/字体排版完成后高度会变，再校正一次
-      requestAnimationFrame(() => { if (active() === item) els.docScroll.scrollTop = target; });
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => { if (active() === item) setScrollTopNow(els.docScroll, target); });
+      }
     } else {
-      // 从头开始：立即归零 —— 切换文件时不该看到一段滚动动画
-      els.docScroll.scrollTop = 0;
+      // 从头开始：立即归零，切换文件时不该看到一段滚动动画
+      setScrollTopNow(els.docScroll, 0);
     }
     setupReveal();
 
@@ -1068,6 +1085,7 @@ window.DV = window.DV || {};
   }
 
   const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
+  let scrollSaveTimer = 0;               // 滚动后延迟写会话
   let saveTimer = 0, dirty = false, wantFocus = false;
 
   /** 手动保存（工具栏「保存」/ ⌘S）：只读或没有改动时给出提示，不写文件 */
@@ -1159,19 +1177,21 @@ window.DV = window.DV || {};
     }
     const item = state.files.find(f => f.fullPath === res.path);
     if (item) {
+      /* 只更新数据，绝不重绘文档。
+         重绘会把滚动位置弹回顶部、丢掉光标与选区，正在打字的人会直接被打断。
+         这里把重新渲染好的 HTML 存进 item.html，等下次真正需要显示时再用。 */
       if (item.kind === 'rtf' && !isPlainView(item)) {
-        // 重新从写回后的内容渲染（得到干净的 DOM，避免继续在被编辑的树上叠加）
         item.text = DV.rtf.rebuildSource(item.rawSrc || '', els.doc);
         item.rawSrc = item.text;
-        renderFile(item);
-        paintDoc(item, { keepScroll: true });   // 写回后别把视图弹回顶部
+        renderFile(item);              // 只解析、不落 DOM
       } else {
         item.text = domToText(els.doc);
-        item.lines = countLines(item.text);
-        item.chars = item.text.length;
-        item.bytes = item.text.length;
       }
+      item.lines = countLines(item.text);
+      item.chars = item.text.length;
+      item.bytes = item.text.length;
       syncRowClasses();
+      saveSession();                   // 正文变了，顺手把会话里的内容同步一下
     }
     setSaveState('saved');
     DV.Log.ok('已写回源文件：' + res.path);
@@ -1591,17 +1611,10 @@ window.DV = window.DV || {};
     };
     const btnDiag = $('#btnDiag');
     if (btnDiag) btnDiag.addEventListener('click', diagNow);
-    document.addEventListener('keydown', e => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); diagNow(); }
-      // ⌘S：可编辑时保存写回，否则交给导出
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's' && canEdit()) {
-        e.preventDefault(); saveEdit();
-      }
-    });
-
     /* 就地编辑：输入即标记未保存，停手后自动写回 */
     els.doc.addEventListener('input', () => { if (canEdit()) markDirty(); });
-    els.doc.addEventListener('blur', () => { if (dirty && canEdit()) saveEdit(); }, true);
+    /* 不再「失焦就写回」：点一下别处（工具栏、侧栏）就写文件太突然。
+       现在只有两条写回路径：停手 1.5 分钟的自动保存，和工具栏「保存」。 */
 
     /* 文档内锚点：交给平滑滚动 */
     els.doc.addEventListener('click', e => {
@@ -1625,7 +1638,7 @@ window.DV = window.DV || {};
       const on = DV.Settings.toggleImmersive();
       DV.SettingsUI.applyImmersive(on);
       $('#btnImmersive').classList.toggle('on', on);
-      DV.toast(on ? '已进入沉浸式阅读（Esc 退出）' : '已退出沉浸式阅读', '', 1600);
+      DV.toast(on ? '已进入沉浸式阅读' : '已退出沉浸式阅读', '', 1600);
     });
 
     /* 调试：工具栏按钮 / 标题栏 F3 提示 / 快捷键 */
@@ -1653,86 +1666,15 @@ window.DV = window.DV || {};
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => runSearch(v.trim()), 180);
     });
-    els.docSearch.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? stepMatch(-1) : stepMatch(1); }
-      if (e.key === 'Escape') { els.docSearch.value = ''; runSearch(''); els.docSearch.blur(); }
-    });
+    /* 搜索框只负责输入；上一处/下一处用旁边的 ↑ ↓ 按钮 */
     $('#btnSearchNext').addEventListener('click', () => stepMatch(1));
     $('#btnSearchPrev').addEventListener('click', () => stepMatch(-1));
 
-    /* 快捷键 */
+    /* 快捷键：只保留 F3。
+       之前的无修饰键（N 上一个/下一个文件等）在 contenteditable 里也会触发，
+       打字时随手一个 n 就跳到别的文件，所以全部去掉，改为只用界面按钮。 */
     window.addEventListener('keydown', e => {
-      const tag = (e.target.tagName || '').toLowerCase();
-      const typing = tag === 'input' || tag === 'textarea';
-
-      if (e.key === 'F3') { e.preventDefault(); DV.Debug.toggle(); return; }
-      // Esc 的优先级：沉浸阅读 > 设置面板 > 调试面板
-      if (e.key === 'Escape' && DV.Settings.get().immersive) {
-        DV.Settings.set({ immersive: false });
-        DV.SettingsUI.applyImmersive(false);
-        document.getElementById('btnImmersive').classList.remove('on');
-        DV.toast('已退出沉浸式阅读', '', 1400);
-        return;
-      }
-      if (e.key === 'Escape' && DV.SettingsUI.isOpen()) { DV.SettingsUI.hide(); return; }
-      if (e.key === 'Escape' && DV.Debug.visible) { DV.Debug.hide(); return; }
-      if (e.key === 'F12') { e.preventDefault(); DV.Debug.toggle(); return; }
-
-      const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && e.key.toLowerCase() === 'e') { e.preventDefault(); toggleRaw(); return; }
-      if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); els.docSearch.focus(); els.docSearch.select(); return; }
-      if (ctrl && e.key.toLowerCase() === 'o') {
-        e.preventDefault();
-        if (!nativePick('files')) els.fileInput.click();
-        return;
-      }
-      if (ctrl && e.shiftKey && e.key.toLowerCase() === 'a') {
-        e.preventDefault();                                // 快速切换只读 / 可编辑
-        const next = editable() ? 'ro' : 'rw';
-        wantFocus = (next === 'rw');
-        DV.Settings.set({ editMode: next });
-        if (DV.SettingsUI && DV.SettingsUI.syncControls) DV.SettingsUI.syncControls();
-        const cur = active();
-        if (next === 'rw' && cur && cur.kind === 'md') {
-          DV.toast(DV.t('Markdown 保持只读显示（编辑仅支持 RTF / 文本 / 代码文件）'), 'warn', 3000);
-        } else {
-          DV.toast(next === 'rw' ? DV.t('可编辑：可直接在正文里修改，会写回源文件')
-                                 : DV.t('只读：不会改动任何文件'), '', 2400);
-        }
-        return;
-      }
-      if (ctrl && e.key.toLowerCase() === 'a' && !e.shiftKey && !typing) {
-        e.preventDefault(); setSelection(filteredFiles().map(f => f.id)); return;
-      }
-      if (ctrl && e.key.toLowerCase() === 'm' && !typing) { e.preventDefault(); mergeSelected(); return; }
-      if (e.key === 'Escape' && !typing && state.selected.length) { setSelection([]); return; }
-      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); gotoPart(-1); return; }
-      if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); gotoPart(1); return; }
-      if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); DV.Debug.toggle(); return; }
-      if (ctrl && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); return; }
-      if (ctrl && e.key === '-') { e.preventDefault(); bumpFont(-1); return; }
-      if (ctrl && e.key === '0') { e.preventDefault(); DV.Settings.set({ size: DV.Settings.DEFAULTS.size }); DV.SettingsUI.syncControls(); return; }
-    if (ctrl && e.key === ',') { e.preventDefault(); DV.SettingsUI.toggle(); return; }
-      if (ctrl && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); return; }
-      if (ctrl && e.key.toLowerCase() === 'i' && !typing) {
-        e.preventDefault(); document.getElementById('btnImmersive').dispatch('click'); return;
-      }
-      if (e.key === 'F11') {
-        e.preventDefault();
-        const onImm = DV.Settings.toggleImmersive();
-        DV.SettingsUI.applyImmersive(onImm);
-        document.getElementById('btnImmersive').classList.toggle('on', onImm);
-        return;
-      }
-
-      if (!typing && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && e.altKey) {
-        e.preventDefault();
-        step(-1 + 2 * (e.key === 'ArrowDown' ? 1 : 0));
-      }
-      if (!typing && e.key === 'n' && !ctrl && state.files.length) {
-        // 无修饰 n：下一个文件
-        step(1);
-      }
+      if (e.key === 'F3') { e.preventDefault(); DV.Debug.toggle(); }
     });
 
     /* 滚动态：调试面板里的滚动高度 */
@@ -1755,7 +1697,11 @@ window.DV = window.DV || {};
       if (!it) return;
       const pct = els.docScroll.scrollTop / Math.max(1, els.docScroll.scrollHeight - els.docScroll.clientHeight) * 100;
       els.sbHint.textContent = DV.t('滚动') + ' ' + pct.toFixed(0) + '% · ' + DV.t('F3 调试');
-      if (DV.Settings.get().rememberScroll !== false) it.scrollTop = els.docScroll.scrollTop;
+      if (DV.Settings.get().rememberScroll !== false) {
+        it.scrollTop = els.docScroll.scrollTop;
+        clearTimeout(scrollSaveTimer);
+        scrollSaveTimer = setTimeout(saveSession, 1200);   // 节流写会话，避免频繁序列化
+      }
     }, { passive: true });
 
     wireDragDrop();

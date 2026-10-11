@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DocViewer — RTF / TXT / Markdown 多文件浏览器</title>
-<link rel="stylesheet" href="css/hmcl.css?v=8">
+<link rel="stylesheet" href="css/hmcl.css?v=9">
 </head>
 <body data-theme="dark">
 
@@ -26,7 +26,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="side-top">
       <span class="side-top-title">列表</span>
-      <button class="iconbtn side-collapse" id="btnSidebar" title="收起侧栏 (Ctrl+B)"></button>
+      <button class="iconbtn side-collapse" id="btnSidebar" title="收起侧栏"></button>
     </div>
     <input type="file" id="fileInput" multiple
            accept=".rtf,.txt,.text,.md,.markdown,.mdown,.mkd,.log,.nfo,.ini,.cfg,.conf,.json,.jsonc,.csv,.tsv,.xml,.yml,.yaml,.toml,.properties,.gradle,.env,.java,.kt,.scala,.groovy,.js,.mjs,.cjs,.ts,.tsx,.jsx,.vue,.svelte,.py,.rb,.php,.pl,.lua,.r,.go,.rs,.swift,.m,.mm,.c,.h,.cc,.cpp,.cxx,.hpp,.cs,.dart,.ex,.exs,.clj,.hs,.fs,.vb,.asm,.s,.sql,.sh,.bash,.zsh,.fish,.bat,.cmd,.ps1,.html,.htm,.css,.scss,.less,.sass" hidden>
@@ -44,8 +44,8 @@
       </div>
       <div class="selbar-actions">
         <button class="btn primary tiny" id="btnMerge" title="把选中的文件按列表顺序拼接成一个阅读视图（不改动原文件）">拼接到一起</button>
-        <button class="btn ghost tiny" id="btnSelAll" title="全选 (Ctrl/Cmd+A)">全选</button>
-        <button class="btn ghost tiny" id="btnSelNone" title="取消选择 (Esc)">取消</button>
+        <button class="btn ghost tiny" id="btnSelAll" title="全选">全选</button>
+        <button class="btn ghost tiny" id="btnSelNone" title="取消选择">取消</button>
       </div>
       <div class="selbar-hint" id="selHint">Ctrl/⌘ 点选 · Shift 连选 · 拖动可调整顺序</div>
     </div>
@@ -98,17 +98,17 @@
         <div class="mergebar" id="mergeBar" hidden>
           <span class="ms" id="msMerge"></span>
           <span class="mergebar-label" id="mergeLabel">合并文档</span>
-          <button class="btn ghost tiny" id="btnMergePrev" title="上一段 (Alt+←)">‹</button>
+          <button class="btn ghost tiny" id="btnMergePrev" title="上一段">‹</button>
           <span class="mergebar-part" id="mergePart">1 / 1</span>
-          <button class="btn ghost tiny" id="btnMergeNext" title="下一段 (Alt+→)">›</button>
+          <button class="btn ghost tiny" id="btnMergeNext" title="下一段">›</button>
           <button class="btn ghost tiny" id="btnMergeSep" title="显示 / 隐藏每段的分隔标题">标题：开</button>
           <button class="btn ghost tiny" id="btnMergeSplit" title="还原成各自独立的文件">拆开</button>
         </div>
-        <button class="btn icon" id="btnRaw" title="源码 / 渲染切换 (Ctrl+E)">源码</button>
+        <button class="btn icon" id="btnRaw" title="源码 / 渲染切换">源码</button>
         <button class="btn icon" id="btnCopy" title="复制全文">复制</button>
-        <button class="btn icon" id="btnSave" title="保存改动到源文件 (Ctrl+S)">保存</button>
-        <button class="btn icon" id="btnImmersive" title="沉浸式阅读 (F11 / Ctrl+I)">沉浸</button>
-        <button class="btn icon-only" id="btnSettings" title="设置 (Ctrl+,)"></button>
+        <button class="btn icon" id="btnSave" title="保存改动到源文件">保存</button>
+        <button class="btn icon" id="btnImmersive" title="沉浸式阅读">沉浸</button>
+        <button class="btn icon-only" id="btnSettings" title="设置"></button>
       </div>
     </div>
 
@@ -121,10 +121,7 @@
             <h1>DocViewer</h1>
             <p>打开 <b>RTF</b>、<b>TXT</b>、<b>Markdown</b> 文件，可同时打开多个。</p>
             <div class="welcome-keys">
-              <div><kbd>F3</kbd> 打开调试面板</div>
-              <div><kbd>Ctrl</kbd>+<kbd>E</kbd> 源码 / 渲染切换</div>
-              <div><kbd>Ctrl</kbd>+<kbd>F</kbd> 文档内搜索</div>
-              <div><kbd>Ctrl</kbd>+<kbd>O</kbd> 打开文件</div>
+              <div><kbd>F3</kbd> 打开调试面板（唯一的快捷键）</div>
             </div>
             <button class="btn primary big" id="btnWelcomeOpen">打开文件</button>
           </div>
@@ -165,7 +162,7 @@
       <span class="dbg-badge" id="setThemeBadge">深色</span>
       <div class="spacer"></div>
       <button class="iconbtn" id="setReset" title="恢复默认设置">重置</button>
-      <button class="iconbtn" id="setClose" title="关闭 (Esc)">×</button>
+      <button class="iconbtn" id="setClose" title="关闭设置">×</button>
     </div>
 
     <div class="dbg-body">
@@ -249,7 +246,7 @@
           </div>
           <div class="set-note">只读（默认）：正文不可编辑，没有光标，不会改动任何文件。
             可编辑：光标可以放到正文任意位置直接修改，停手约 1.5 分钟后自动写回<strong>源文件本身</strong>
-            （首次写入会生成 .bak 备份）。也可以随时点工具栏的「保存」或按 <kbd>⌘S</kbd> 立即写回。
+            （首次写入会生成 .bak 备份）。也可以随时点工具栏的「保存」立即写回。
             RTF 会按文件自身的字体与字号重新生成。
             <strong>Markdown 不参与编辑</strong>，始终保持原来的渲染显示。</div>
           <label class="chk"><input type="checkbox" id="setSoftWrap"> RTF 按源文件换行</label>
@@ -271,7 +268,7 @@
             <input type="range" id="setImmWidth" min="26" max="70" step="1">
             <b class="set-val" id="setImmWidthVal">42</b>
           </div>
-          <div class="set-note">移动鼠标唤出底部控制条；<kbd>Esc</kbd> 或 <kbd>F11</kbd> 退出。</div>
+          <div class="set-note">移动鼠标唤出底部控制条，点「退出沉浸」返回。</div>
         </section>
 
         <section class="set-group">
@@ -287,7 +284,7 @@
             <button class="btn ghost" id="setOpenDebug" style="flex:1">调试面板 (F3)</button>
             <button class="btn ghost" id="setDiag" style="flex:1">诊断报告</button>
           </div>
-          <div class="set-note">调试面板 <kbd>F3</kbd> · 诊断报告 <kbd>⌘⇧D</kbd></div>
+          <div class="set-note">调试面板：按 F3 键。诊断报告：点上面的按钮。</div>
           <button class="btn ghost" id="setExport" style="width:100%;margin-top:10px">导出当前文件为 HTML</button>
           <div class="set-note">把当前文档存成一份独立的 HTML 文件，方便分享或存档。</div>
           <button class="btn ghost danger" id="setWipe" style="width:100%;margin-top:10px">恢复初始设置</button>
@@ -324,7 +321,7 @@
       <span class="dbg-badge">F3</span>
       <span class="dbg-metric" id="dbgMetric">—</span>
       <div class="spacer"></div>
-      <button class="iconbtn" id="dbgClose" title="关闭 (F3 / Esc)">×</button>
+      <button class="iconbtn" id="dbgClose" title="关闭调试面板 (F3)">×</button>
     </div>
 
     <div class="dbg-tabs">
@@ -378,7 +375,7 @@
 </div>
 
 <!-- 侧栏收起后的唤出把手 -->
-<button class="side-handle" id="sideHandle" title="展开侧栏 (Ctrl+B)" hidden>
+<button class="side-handle" id="sideHandle" title="展开侧栏" hidden>
   <span class="ms" id="msHandle"></span>
 </button>
 
@@ -393,21 +390,21 @@
   <span class="imm-sep"></span>
   <button class="iconbtn" id="immFont-" title="缩小字号">A-</button>
   <button class="iconbtn" id="immFont+" title="放大字号">A+</button>
-  <button class="iconbtn" id="immExit" title="退出沉浸 (Esc)">退出沉浸</button>
+  <button class="iconbtn" id="immExit" title="退出沉浸式阅读">退出沉浸</button>
 </div>
 
 <!-- 浮层提示 -->
 <div class="toasts" id="toasts"></div>
 
-<script src="js/util.js?v=8"></script>
-<script src="js/i18n.js?v=8"></script>
-<script src="js/welcome.js?v=8"></script>
-<script src="js/frames.js?v=8"></script>
-<script src="js/settings.js?v=8"></script>
-<script src="js/md.js?v=8"></script>
-<script src="js/rtf.js?v=8"></script>
-<script src="js/debug.js?v=8"></script>
-<script src="js/ui-settings.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
+<script src="js/util.js?v=9"></script>
+<script src="js/i18n.js?v=9"></script>
+<script src="js/welcome.js?v=9"></script>
+<script src="js/frames.js?v=9"></script>
+<script src="js/settings.js?v=9"></script>
+<script src="js/md.js?v=9"></script>
+<script src="js/rtf.js?v=9"></script>
+<script src="js/debug.js?v=9"></script>
+<script src="js/ui-settings.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
 </body>
 </html>
