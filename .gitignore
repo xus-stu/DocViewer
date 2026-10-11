@@ -1,0 +1,17 @@
+# macOS / build artifacts
+.DS_Store
+*.icns.bak
+packaging/DocViewer.iconset/
+packaging/__pycache__/
+__pycache__/
+*.pyc
+
+# 打包产物
+*.app/
+build/
+dist/
+
+# 本地文件
+*.bak
+*.local
+.env

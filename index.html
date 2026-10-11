@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DocViewer — RTF / TXT / Markdown 多文件浏览器</title>
+<link rel="stylesheet" href="css/hmcl.css?v=6">
+</head>
+<body data-theme="dark">
+
+<!-- 应用标题栏 -->
+<div class="titlebar">
+  <div class="tb-left">
+    <span class="tb-logo" id="tbLogo"></span>
+    <span class="tb-title">DocViewer</span>
+    <span class="tb-sub" id="tbSub">RTF / TXT / Markdown 阅读器</span>
+  </div>
+  <div class="tb-right">
+    <span class="tb-chip" id="tbFps">— fps</span>
+    <span class="tb-chip" id="tbF3">F3 调试</span>
+  </div>
+</div>
+
+<div class="app">
+  <!-- ================= 侧边栏 ================= -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-top">
+      <span class="side-top-title">列表</span>
+      <button class="iconbtn side-collapse" id="btnSidebar" title="收起侧栏 (Ctrl+B)"></button>
+    </div>
+    <input type="file" id="fileInput" multiple
+           accept=".rtf,.txt,.text,.md,.markdown,.mdown,.mkd,.log,.nfo,.ini,.cfg,.conf,.json,.jsonc,.csv,.tsv,.xml,.yml,.yaml,.toml,.properties,.gradle,.env,.java,.kt,.scala,.groovy,.js,.mjs,.cjs,.ts,.tsx,.jsx,.vue,.svelte,.py,.rb,.php,.pl,.lua,.r,.go,.rs,.swift,.m,.mm,.c,.h,.cc,.cpp,.cxx,.hpp,.cs,.dart,.ex,.exs,.clj,.hs,.fs,.vb,.asm,.s,.sql,.sh,.bash,.zsh,.fish,.bat,.cmd,.ps1,.html,.htm,.css,.scss,.less,.sass" hidden>
+    <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
+
+    <div class="side-stats" id="sideStats">
+      <span><b id="statCount">0</b> 个文件</span>
+      <span><b id="statSize">0 B</b></span>
+    </div>
+
+    <div class="selbar" id="selBar" hidden>
+      <div class="selbar-info">
+        <span class="ms" id="msSel"></span>
+        <b id="selCount">0</b><span>个文件已选</span>
+      </div>
+      <div class="selbar-actions">
+        <button class="btn primary tiny" id="btnMerge" title="把选中的文件按列表顺序拼接成一个阅读视图（不改动原文件）">拼接到一起</button>
+        <button class="btn ghost tiny" id="btnSelAll" title="全选 (Ctrl/Cmd+A)">全选</button>
+        <button class="btn ghost tiny" id="btnSelNone" title="取消选择 (Esc)">取消</button>
+      </div>
+      <div class="selbar-hint" id="selHint">Ctrl/⌘ 点选 · Shift 连选 · 拖动可调整顺序</div>
+    </div>
+
+    <div class="side-search">
+      <span class="ms" id="msList"></span>
+      <input type="text" id="listFilter" placeholder="筛选文件名…">
+    </div>
+
+    <div class="filelist" id="fileList">
+      <div class="fitem-hl" id="listHL" hidden></div>
+      <div class="flist-body" id="listBody">
+      <div class="empty-list">
+        <p>还没有文件</p>
+        <p class="dim">把文件拖到这里，或点下方「打开文件」</p>
+      </div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <div class="foot-row">
+        <label class="switch">
+          <input type="checkbox" id="optWrap" checked>
+          <span class="slider"></span>
+          <span class="switch-label">自动换行</span>
+        </label>
+        <button class="btn ghost tiny" id="btnClear" title="清空当前列表">清空</button>
+      </div>
+      <div class="side-actions">
+        <button class="btn primary" id="btnOpenFiles" title="选择多个文件">打开文件</button>
+        <button class="btn" id="btnOpenDir" title="导入整个文件夹">导入文件夹</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= 主区域 ================= -->
+  <main class="content">
+    <div class="topbar">
+      <div class="doc-title" id="docTitle">未打开文件</div>
+      <div class="doc-meta" id="docMeta">拖拽文件到窗口任意位置即可开始</div>
+      <div class="spacer"></div>
+      <div class="toolbar">
+        <div class="search-box">
+          <span class="ms" id="msDoc"></span>
+          <input type="text" id="docSearch" placeholder="在文档中搜索…">
+          <span class="hits" id="searchHits"></span>
+          <button class="iconbtn tiny" id="btnSearchPrev" title="上一个 (Shift+Enter)">↑</button>
+          <button class="iconbtn tiny" id="btnSearchNext" title="下一个 (Enter)">↓</button>
+        </div>
+        <div class="mergebar" id="mergeBar" hidden>
+          <span class="ms" id="msMerge"></span>
+          <span class="mergebar-label" id="mergeLabel">合并文档</span>
+          <button class="btn ghost tiny" id="btnMergePrev" title="上一段 (Alt+←)">‹</button>
+          <span class="mergebar-part" id="mergePart">1 / 1</span>
+          <button class="btn ghost tiny" id="btnMergeNext" title="下一段 (Alt+→)">›</button>
+          <button class="btn ghost tiny" id="btnMergeSep" title="显示 / 隐藏每段的分隔标题">标题：开</button>
+          <button class="btn ghost tiny" id="btnMergeSplit" title="还原成各自独立的文件">拆开</button>
+        </div>
+        <button class="btn icon" id="btnRaw" title="源码 / 渲染切换 (Ctrl+E)">源码</button>
+        <button class="btn icon" id="btnCopy" title="复制全文">复制</button>
+        <button class="btn icon" id="btnDownload" title="导出为 HTML">导出</button>
+        <button class="btn icon" id="btnImmersive" title="沉浸式阅读 (F11 / Ctrl+I)">沉浸</button>
+        <button class="btn icon-only" id="btnSettings" title="设置 (Ctrl+,)"></button>
+      </div>
+    </div>
+
+    <div class="readbar" id="readBar"></div>
+    <div class="stage" id="stage">
+      <div class="doc-scroll" id="docScroll">
+        <article class="doc" id="doc">
+          <div class="welcome">
+            <div class="welcome-mark" id="welcomeMark"></div>
+            <h1>DocViewer</h1>
+            <p>打开 <b>RTF</b>、<b>TXT</b>、<b>Markdown</b> 文件，可同时打开多个。</p>
+            <div class="welcome-keys">
+              <div><kbd>F3</kbd> 打开调试面板</div>
+              <div><kbd>Ctrl</kbd>+<kbd>E</kbd> 源码 / 渲染切换</div>
+              <div><kbd>Ctrl</kbd>+<kbd>F</kbd> 文档内搜索</div>
+              <div><kbd>Ctrl</kbd>+<kbd>O</kbd> 打开文件</div>
+            </div>
+            <button class="btn primary big" id="btnWelcomeOpen">打开文件</button>
+          </div>
+        </article>
+        <div class="scrollpad"></div>
+      </div>
+
+      <!-- 拖拽遮罩 -->
+      <div class="dropzone" id="dropzone">
+        <div class="dz-box">
+          <span class="ms" id="msDrop"></span>
+          <b>松手即导入</b>
+          <small>RTF / TXT / Markdown 与常见代码、配置文件（可多选、可拖入文件夹）</small>
+        </div>
+      </div>
+    </div>
+
+    <!-- 状态栏 -->
+    <div class="statusbar">
+      <span class="sb-item" id="sbFile">—</span>
+      <span class="sb-dot"></span>
+      <span class="sb-item" id="sbType">—</span>
+      <span class="sb-dot"></span>
+      <span class="sb-item" id="sbEnc">—</span>
+      <span class="sb-dot"></span>
+      <span class="sb-item" id="sbSize">—</span>
+      <div class="spacer"></div>
+      <span class="sb-item save-state" id="saveState" hidden></span>
+      <span class="sb-item dim" id="sbHint">F3 调试</span>
+    </div>
+  </main>
+
+  <!-- ================= 设置面板 ================= -->
+  <aside class="settingspane" id="settingspane" hidden>
+    <div class="dbg-head">
+      <span class="ms" id="msSet"></span>
+      <b>设置</b>
+      <span class="dbg-badge" id="setThemeBadge">深色</span>
+      <div class="spacer"></div>
+      <button class="iconbtn" id="setReset" title="恢复默认设置">重置</button>
+      <button class="iconbtn" id="setClose" title="关闭 (Esc)">×</button>
+    </div>
+
+    <div class="dbg-body">
+      <div class="dbg-page active set-page">
+
+        <section class="set-group">
+          <h4>语言</h4>
+          <div class="set-row">
+            <span class="set-label">语言</span>
+            <div class="seg" id="segLang"></div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h4>主题</h4>
+          <div class="theme-grid" id="themeGrid"></div>
+          <div class="set-row custom-row" id="customRow" hidden>
+            <span class="set-label">自定义</span>
+            <div class="custom-colors">
+              <label title="界面底色">底色<input type="color" id="ctBg"></label>
+              <label title="侧栏 / 面板底色">面板<input type="color" id="ctBg2"></label>
+              <label title="文字颜色">文字<input type="color" id="ctText"></label>
+              <label title="强调色">强调<input type="color" id="ctAccent"></label>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">强调色</span>
+            <div class="swatch-row" id="swatchAccent"></div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">正文颜色</span>
+            <div class="swatch-row" id="swatchText"></div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">阅读底色</span>
+            <div class="swatch-row" id="swatchBg"></div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h4>字体</h4>
+          <div class="font-grid" id="fontGrid"></div>
+          <div class="set-row" id="fontCustomRow" hidden>
+            <span class="set-label">字体名</span>
+            <input type="text" id="fontCustomInput" class="set-input" placeholder="例如 Source Han Serif SC">
+          </div>
+          <div class="set-note" id="fontPreview">字体预览 The quick brown fox 0123456789 中文字形示例</div>
+        </section>
+
+        <section class="set-group">
+          <h4>排版</h4>
+          <div class="slider-row">
+            <span class="set-label">字号</span>
+            <input type="range" id="setSize" min="11" max="30" step="0.5">
+            <b class="set-val" id="setSizeVal">15</b>
+          </div>
+          <div class="slider-row">
+            <span class="set-label">行高</span>
+            <input type="range" id="setLine" min="1.3" max="2.6" step="0.05">
+            <b class="set-val" id="setLineVal">1.8</b>
+          </div>
+          <div class="slider-row">
+            <span class="set-label">行宽</span>
+            <input type="range" id="setWidth" min="520" max="1200" step="20">
+            <b class="set-val" id="setWidthVal">860</b>
+          </div>
+          <div class="slider-row">
+            <span class="set-label">上下留白</span>
+            <input type="range" id="setPad" min="0" max="80" step="2">
+            <b class="set-val" id="setPadVal">22</b>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h4>文档</h4>
+          <label class="chk"><input type="checkbox" id="setRtfFont"> RTF 使用阅读器字体、字号与配色</label>
+          <div class="set-note">忽略文件自带的字体、字号；与背景对比过低的文字也会改用阅读器配色。不改动原文件。</div>
+          <div class="set-row">
+            <span class="set-label">编辑</span>
+            <div class="seg" id="segEdit"></div>
+          </div>
+          <div class="set-note">只读（默认）：正文不可编辑，没有光标，不会改动任何文件。
+            可编辑：光标可以放到正文任意位置直接修改，停手约 1.5 秒后写回<strong>源文件本身</strong>
+            （首次写入会生成 .bak 备份）。RTF 会按文件自身的字体与字号重新生成。
+            <strong>Markdown 不参与编辑</strong>，始终保持原来的渲染显示。</div>
+          <label class="chk"><input type="checkbox" id="setSoftWrap"> RTF 按源文件换行</label>
+          <label class="chk"><input type="checkbox" id="setPersist"> 记住会话（下次打开恢复上次的文件）</label>
+          <div class="set-note">
+            有些编辑器（如 macOS 文本编辑）导出的 RTF 用**裸换行**分段、不写 <code>\par</code>。
+            按 RTF 规范这算空白，会被合并成一整段 —— 打开这个开关就把裸换行当软换行处理。
+            切换后当前文档会自动重新解析。
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h4>沉浸式阅读</h4>
+          <label class="chk"><input type="checkbox" id="setImmersive"> 开启（隐藏标题栏 / 侧栏 / 工具栏）</label>
+          <div class="slider-row">
+            <span class="set-label">沉浸行宽</span>
+            <input type="range" id="setImmWidth" min="26" max="70" step="1">
+            <b class="set-val" id="setImmWidthVal">42</b>
+          </div>
+          <div class="set-note">移动鼠标唤出底部控制条；<kbd>Esc</kbd> 或 <kbd>F11</kbd> 退出。</div>
+        </section>
+
+        <section class="set-group">
+          <h4>标题栏</h4>
+          <label class="chk"><input type="checkbox" id="setShowTitlebar"> 显示顶部标题栏（DocViewer 名称那一行）</label>
+          <div class="set-note" style="margin-bottom:8px">选择文件名下方那行显示哪些内容。</div>
+          <div class="meta-grid" id="metaGrid"></div>
+        </section>
+
+        <section class="set-group">
+          <h4>工具</h4>
+          <div class="set-row">
+            <button class="btn ghost" id="setOpenDebug" style="flex:1">调试面板 (F3)</button>
+            <button class="btn ghost" id="setDiag" style="flex:1">诊断报告</button>
+          </div>
+          <div class="set-note">调试面板 <kbd>F3</kbd> · 诊断报告 <kbd>⌘⇧D</kbd></div>
+          <button class="btn ghost danger" id="setWipe" style="width:100%;margin-top:10px">恢复初始设置</button>
+          <div class="set-note">清空全部设置与会话，回到第一次打开的状态</div>
+        </section>
+
+        <section class="set-group">
+          <h4>动画与帧率</h4>
+          <div class="set-row">
+            <span class="set-label">动画强度</span>
+            <div class="seg" id="segAnim"></div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">动画速度</span>
+            <div class="seg" id="segAnimSpeed"></div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">帧率上限</span>
+            <div class="seg" id="segFps"></div>
+          </div>
+          <div class="set-note" id="fpsNote">当前渲染：—</div>
+          <div class="set-note">帧率越高，缓动与滚动越细腻。屏幕每秒刷新的画面数不变。</div>
+        </section>
+
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= F3 调试面板 ================= -->
+  <aside class="debugpane" id="debugpane" hidden>
+    <div class="dbg-head">
+      <span class="ms" id="msDbg"></span>
+      <b>调试面板</b>
+      <span class="dbg-badge">F3</span>
+      <span class="dbg-metric" id="dbgMetric">—</span>
+      <div class="spacer"></div>
+      <button class="iconbtn" id="dbgClose" title="关闭 (F3 / Esc)">×</button>
+    </div>
+
+    <div class="dbg-tabs">
+      <button class="dbg-tab active" data-tab="perf">性能</button>
+      <button class="dbg-tab" data-tab="doc">文档</button>
+      <button class="dbg-tab" data-tab="env">环境</button>
+      <button class="dbg-tab" data-tab="log">日志</button>
+    </div>
+
+    <div class="dbg-body">
+      <section class="dbg-page active" data-page="perf">
+        <div class="dbg-graph">
+          <canvas id="fpsCanvas" width="600" height="120"></canvas>
+          <div class="dbg-graph-label">渲染帧率 <b id="fpsNow">—</b> fps ·
+            <span id="frameMs">—</span> ms/帧</div>
+        </div>
+        <label class="chk probe-chk">
+          <input type="checkbox" id="dbgProbe">
+          高帧率探针：测量主线程调度吞吐
+        </label>
+        <label class="chk probe-chk">
+          <input type="checkbox" id="dbgProbeMax">
+          <span class="warn-text">放开 CPU 预算</span>（测真实上限，会跑满核心）
+        </label>
+        <p class="probe-note">探针只测任务调度能力，不产生画面，会占用 CPU。曲线里的帧率才是实际渲染速率。</p>
+        <div class="kv" id="perfKv"></div>
+        <div class="dbg-actions">
+          <button class="btn ghost" id="dbgResetPerf">重置统计</button>
+        </div>
+      </section>
+
+      <section class="dbg-page" data-page="doc">
+        <div class="kv" id="docKv"></div>
+      </section>
+
+      <section class="dbg-page" data-page="env">
+        <div class="kv" id="envKv"></div>
+      </section>
+
+      <section class="dbg-page" data-page="log">
+        <div class="dbg-logbar">
+          <label class="chk"><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label>
+          <span class="spacer"></span>
+          <button class="btn ghost tiny" id="logCopy">复制</button>
+          <button class="btn ghost tiny" id="logClear">清空</button>
+        </div>
+        <div class="dbg-log" id="dbgLog"></div>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<!-- 侧栏收起后的唤出把手 -->
+<button class="side-handle" id="sideHandle" title="展开侧栏 (Ctrl+B)" hidden>
+  <span class="ms" id="msHandle"></span>
+</button>
+
+<!-- 沉浸式阅读悬浮控制条 -->
+<div class="immbar" id="immbar" hidden>
+  <div class="imm-progress" id="immProgress"></div>
+  <span class="ms" id="msImm"></span>
+  <span class="imm-title" id="immTitle">未打开文件</span>
+  <span class="imm-sep"></span>
+  <button class="iconbtn" id="immPrev" title="上一个文件">‹</button>
+  <button class="iconbtn" id="immNext" title="下一个文件">›</button>
+  <span class="imm-sep"></span>
+  <button class="iconbtn" id="immFont-" title="缩小字号">A-</button>
+  <button class="iconbtn" id="immFont+" title="放大字号">A+</button>
+  <button class="iconbtn" id="immExit" title="退出沉浸 (Esc)">退出沉浸</button>
+</div>
+
+<!-- 浮层提示 -->
+<div class="toasts" id="toasts"></div>
+
+<script src="js/util.js?v=6"></script>
+<script src="js/i18n.js?v=6"></script>
+<script src="js/welcome.js?v=6"></script>
+<script src="js/frames.js?v=6"></script>
+<script src="js/settings.js?v=6"></script>
+<script src="js/md.js?v=6"></script>
+<script src="js/rtf.js?v=6"></script>
+<script src="js/debug.js?v=6"></script>
+<script src="js/ui-settings.js?v=6"></script>
+<script src="js/app.js?v=6"></script>
+</body>
+</html>
