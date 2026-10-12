@@ -1618,6 +1618,51 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
        '状态栏显示代码类型：' + documentObj.getElementById('sbType').textContent);
   }
 
+  /* --- 场景 7m-2：RTF 写回不得改 \ucN、不得把 \par 降级成 \line --- */
+  {
+    const dec = (b) => new TextDecoder('gb18030').decode(Uint8Array.from(b));
+    // 用户那类文件：\uc0（转义后不跟替代字符）+ 真 \par + 每个 \par 后面一个裸换行
+    const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil\\fcharset134 PingFangSC;}}' +
+      '{\\colortbl;\\red0\\green0\\blue0;}' +
+      '\\viewkind4\\uc0\\pard\\f0\\fs24 \\u25105 \\u26159 \\u-29695\\par\n' +
+      '\\u20320 \\u22909 \\u8221\\par\n' +
+      '\\pard\\f0\\fs24 \\par\n}';
+
+    // 1) 解析侧：\par 后面的裸换行不能再变成软换行（否则写回就成了 \line）
+    const r = DV.rtf.parse(src, { decodeHex: dec });
+    ok(r.stats.softBreaks === 0, '真段落文件不再产生多余软换行', 'softBreaks=' + r.stats.softBreaks);
+    ok(r.html.indexOf('<br') < 0, '解析结果里没有多余的 <br>');
+    ok(!/<p[^>]*>\s*<p/.test(r.html), '段落不再嵌套（<p> 正确闭合）');
+    const plain = r.html.replace(/<[^>]+>/g, '');
+    ok(plain.indexOf('我是') >= 0, '正文完整：' + JSON.stringify(plain));
+    ok(plain.indexOf('”') >= 0, '右引号没有被吃掉', JSON.stringify(plain));
+
+    // 2) 写回侧：\uc0 保留、不补替代字符、段落用 \par
+    const mk = (tag, kids) => ({ tagName: tag, childNodes: kids, nodeType: 1 });
+    const tx = (v) => ({ nodeType: 3, nodeValue: v });
+    const root = mk('DIV', [mk('P', [tx('我是谁')]), mk('P', [tx('你好”')]), mk('P', [])]);
+    const out = DV.rtf.rebuildSource(src, root);
+    ok(out.indexOf('\\uc0') >= 0, '\\uc0 原样保留', (out.match(/\\uc\d/g) || []).join(','));
+    ok(out.indexOf('\\uc1') < 0, '不会擅自把 \\uc0 改成 \\uc1');
+    ok(out.indexOf('\\u8221?') < 0, '\\uc0 时不给 \\uN 补替代字符');
+    ok(out.indexOf('\\line') < 0, '\\par 没有被写成 \\line', (out.match(/\\line/g) || []).length + ' 个 line');
+    ok((out.match(/\\par/g) || []).length >= 3, '段落结构保留（含空段落）',
+       (out.match(/\\par/g) || []).length + ' 个 par');
+    const back = DV.rtf.parse(out, { decodeHex: dec }).html.replace(/<[^>]+>/g, '');
+    ok(back.indexOf('我是') >= 0 && back.indexOf('”') >= 0, '写回后再解析文字不丢', JSON.stringify(back));
+
+    // 3) 对照组：源文件是 \uc1 时，仍按“1 个替代字符”写
+    const src1 = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil PingFangSC;}}' +
+      '\\viewkind4\\uc1\\pard\\f0\\fs24 \\u25105\\par}';
+    const out1 = DV.rtf.rebuildSource(src1, mk('DIV', [mk('P', [tx('我')])]));
+    ok(out1.indexOf('\\uc1') >= 0, '\\uc1 文件仍声明 \\uc1');
+    ok(/\\u\d+\?/.test(out1), '\\uc1 时补一个 ? 替代字符', JSON.stringify(out1.slice(-40)));
+
+    // 4) 无 \uc 声明时按 RTF 默认的 1 处理
+    ok(DV.rtf.detectUc('{\\rtf1\\ansi\\pard x}') === 1, '无声明时默认 \\uc1');
+    ok(DV.rtf.detectUc(src) === 0, '源文件声明为 \\uc0 时取 0');
+  }
+
   /* --- 场景 7n：就地编辑（写回源文件）--- */
   {
     const S = DV.Settings;

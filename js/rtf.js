@@ -175,6 +175,7 @@ DV.rtf = (function () {
     let fontBuf = '';
     let buf = '';          // 待输出文本
     let pendingBreak = false;  // 已碰到软换行，等下一次写文本前插入 <br>
+    let paraEmpty = false;     // 当前段落还没写进任何内容
 
     // HTML 栈
     const out = [];
@@ -250,12 +251,10 @@ DV.rtf = (function () {
     }
     function openParagraph(cls, style) {
       if (liOpen() && s.inList) return;    // 已在列表项内
-      if (buf) {
-        if (mergeIntoLastLi()) return;
-        flush();
-      } else {
-        closeParagraphTag();
-      }
+      if (buf && mergeIntoLastLi()) return;
+      // 开新段落前必须把上一段关掉。原来只在缓冲区为空时才关，
+      // 于是「有文字 + \par」这种情况会把新段落套进上一段里，产出 <p><p>…</p></p> 的非法嵌套。
+      closeParagraphTag();
       flush();
       const sec = sectionIdx();
       const blk = blockIdx();
@@ -265,6 +264,7 @@ DV.rtf = (function () {
       closeTo(depth);
       openTag('p', cls, style);
       spanCache.clear();
+      paraEmpty = true;
       stats.paragraphs++;
     }
 
@@ -397,6 +397,7 @@ DV.rtf = (function () {
     function flush() {
       if (byteBuf.length) buf += flushBytes();
       if (!buf) { return; }
+      paraEmpty = false;
       if (pendingBreak) {                 // 兜底：极少情况下仍有挂起的软换行
         pendingBreak = false;
         out.push('<br>');
@@ -445,9 +446,13 @@ DV.rtf = (function () {
      * 缓冲往往已经被 flush 清空；如果这时跳过，整篇就会挤成一段。
      */
     function markSoftBreak() {
+      // 刚开了一个空段落（典型是 \par 之后跟一个裸换行）时不要插 <br>：
+      // 那个换行只是源文件的可读性折行，插了它写回就会变成 \line，把真段落降级成手动换行。
+      if (paraEmpty) return;
       if (byteBuf.length) write(flushBytes());
       if (buf) flush();
       out.push('<br>');
+      paraEmpty = false;
       stats.softBreaks++;
     }
 
@@ -1091,8 +1096,25 @@ DV.rtf = (function () {
   }
 
   /** 纯文本 → RTF 转义；非 ASCII 用 \uN? （与文件本身编码无关，最稳） */
-  function escapeText(text) {
+  /**
+   * 源文件用的「\uN 后面跟几个替代字符」（\ucN）。
+   * 写回时必须沿用同一个值：原文件是 \uc0（转义后面根本不跟替代字符）时，
+   * 如果写成 \uc1，任何按规范读的软件都会把转义后面那个字符当成替代字符吃掉，
+   * 被吃掉的就是正文里的右引号之类。找不到声明时 RTF 默认是 1。
+   */
+  function detectUc(src) {
+    const s = String(src || '');
+    const at = s.indexOf('\\pard');
+    const body = at >= 0 ? s.slice(at) : s;
+    const m = /\\uc(\d+)/.exec(body) || /\\uc(\d+)/.exec(s);
+    if (!m) return 1;
+    const n = parseInt(m[1], 10);
+    return isNaN(n) ? 1 : Math.max(0, Math.min(9, n));
+  }
+
+  function escapeText(text, uc) {
     const out = [];
+    const fallback = uc === undefined ? '?' : (uc > 0 ? new Array(uc + 1).join('?') : '');
     const str = String(text == null ? '' : text);
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
@@ -1108,7 +1130,11 @@ DV.rtf = (function () {
       else {
         // RTF 的 \uN 用有符号 16 位；代理对自然拆成两个单元
         const n = code > 32767 ? code - 65536 : code;
-        out.push('\\u' + n + '?');
+        // ucN = 0 时不补替代字符，那就要防止下一个字符被当成控制字参数的一部分：
+        // 后面紧跟字母/数字时补一个分隔空格（读的人会把它当定界符吃掉）。
+        const nxt = str[i + 1];
+        const delim = (fallback === '' && nxt && /[0-9A-Za-z]/.test(nxt)) ? ' ' : '';
+        out.push('\\u' + n + fallback + delim);
       }
     }
     return out.join('');
@@ -1154,7 +1180,7 @@ DV.rtf = (function () {
   /** 内联样式 → RTF 控制字（只处理我们解析时会生成的标签） */
   function inlineToRtf(node, out, state) {
     if (!node) return;
-    if (node.nodeType === 3) { out.push(escapeText(node.nodeValue)); return; }
+    if (node.nodeType === 3) { out.push(escapeText(node.nodeValue, state && state.uc)); return; }
     if (node.nodeType !== 1) return;
     const tag = (node.tagName || '').toLowerCase();
     if (tag === 'br') { out.push('\\line '); return; }
@@ -1181,9 +1207,10 @@ DV.rtf = (function () {
     opts = opts || {};
     const fs = opts.fs || dominantFs(opts.source || '');
     const f = (opts.fontIndex != null) ? opts.fontIndex : defaultFontIndex(opts.source || '');
+    const uc = (opts.uc != null) ? opts.uc : detectUc(opts.source || '');
     const out = [];
     out.push('\\pard' + (f != null ? '\\f' + f : '') + '\\fs' + (fs || 24) +
-      '\\uc1\\cf0 ');
+      '\\uc' + uc + '\\cf0 ');
     const blocks = [];
     const blockTags = ['p', 'div', 'li', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre'];
     const kids = (node && node.childNodes) || [];
@@ -1191,9 +1218,10 @@ DV.rtf = (function () {
     const flushInline = () => {
       if (!inline.length) return;
       const parts = [];
-      inline.forEach(n => inlineToRtf(n, parts, {}));
+      inline.forEach(n => inlineToRtf(n, parts, { uc: uc }));
       const text = parts.join('');
-      if (text.trim() || text.indexOf('\\line') >= 0) blocks.push(text);
+      // 空段落也要留着：RTF 里 \par\par 就是空行，丢了会把段落结构改掉
+      blocks.push(text);
       inline = [];
     };
     for (let i = 0; i < kids.length; i++) {
@@ -1202,7 +1230,7 @@ DV.rtf = (function () {
         flushInline();
         const parts = [];
         const inner = k.childNodes || [];
-        for (let j = 0; j < inner.length; j++) inlineToRtf(inner[j], parts, {});
+        for (let j = 0; j < inner.length; j++) inlineToRtf(inner[j], parts, { uc: uc });
         blocks.push(parts.join(''));
       } else {
         inline.push(k);
@@ -1223,5 +1251,5 @@ DV.rtf = (function () {
   }
 
   return { parse, extractText, escapeText, dominantFs, defaultFontIndex,
-    splitSource, htmlToRtf, rebuildSource };
+    splitSource, htmlToRtf, rebuildSource, detectUc };
 })();
