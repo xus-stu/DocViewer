@@ -25,12 +25,14 @@ window.DV = window.DV || {};
     matchIndex: -1,
   };
   let uid = 0;
-  const MAX_KEEP = 400 * 1024;     // 单个文件持久化上限
-  const MAX_TOTAL = 4 * 1024 * 1024;
+  // 会话记忆的容量：放宽（浏览器 localStorage 本身有配额，存不下会明确提示，不影响打开与编辑）
+  const MAX_KEEP = 8 * 1024 * 1024;
+  const MAX_TOTAL = 64 * 1024 * 1024;
 
   const els = {};
-  const MAX_BYTES = 48 * 1024 * 1024;      // 超过直接拒绝（读进内存 + 两次全文遍历会卡死）
-  const BIG_BYTES = 6 * 1024 * 1024;       // 超过只做纯文本展示，不做统计与高亮
+  // 不限制文件大小与数量（打开多少、多大都行）。
+  // BIG_ONLY 只是"大文件跳过全文统计"的阈值，不是限制：文件照常导入、照常显示。
+  const BIG_BYTES = 6 * 1024 * 1024;
 
   /* ================= 编码检测 ================= */
 
@@ -304,11 +306,6 @@ window.DV = window.DV || {};
     for (let idx = 0; idx < fileRecords.length; idx++) {
       const item = fileRecords[idx];
       try {
-        // A13：先看大小再读进内存
-        const size = item.file && typeof item.file.size === 'number' ? item.file.size : 0;
-        if (size > MAX_BYTES) {
-          throw new Error(DV.t('文件超过 {mb} MB，已跳过（避免卡死）', { mb: Math.round(MAX_BYTES / 1048576) }));
-        }
         const buf = await item.file.arrayBuffer();
         const hint = /\.rtf$/i.test(item.name) ? 'gbk' : '';
         const dec = decodeBuffer(buf, hint);
@@ -1068,6 +1065,7 @@ window.DV = window.DV || {};
       }));
     } catch (e) {
       DV.Log.warn('会话保存失败：' + (e && e.name) + '（可能超出 localStorage 配额）');
+      DV.toast(DV.t('文件太大或太多，这次没能写入会话记忆（不影响打开与编辑）'), 'warn', 3600);
     }
   }
 

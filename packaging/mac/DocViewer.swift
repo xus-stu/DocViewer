@@ -425,17 +425,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
+    /// 把路径里的文件夹递归展开成文件（面板导入与启动参数共用）。
+    /// 不按扩展名过滤、不限制数量：类型交给页面判断，未知扩展名按纯文本打开。
+    static func expandFolders(_ urls: [URL]) -> [URL] {
+        var out: [URL] = []
+        for u in urls {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
+            if !isDir.boolValue { out.append(u); continue }
+            if let en = FileManager.default.enumerator(at: u,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]) {
+                for case let f as URL in en where !f.hasDirectoryPath { out.append(f) }
+            }
+        }
+        return out
+    }
+
     private func postFiles(_ urls: [URL], attempt: Int = 0) {
+        let urls = AppDelegate.expandFolders(urls)      // 传进来的是文件夹也能用
         let paths = urls.map { $0.path }
         paths.forEach { OpenedFiles.shared.allow($0) }       // B6：登记为允许读写
         // B19：用 JSONSerialization 生成数组字面量，文件名里的换行/U+2028 不会再让整批注入失败
         let json = (try? JSONSerialization.data(withJSONObject: paths)) ?? Data("[]".utf8)
-        let arr = String(data: json, encoding: .utf8) ?? "[]"
-        let esc = arr
+        let arr = String(data: json, encoding: .utf8) ?? "[]"   // 已经是 ["a","b"] 形式
         // 页面还没跑完 app.js 时 __DV_NATIVE_FILES 还不存在，直接调用会被静默丢掉，
         // 表现就是「用命令行/拖到图标上打开，偶尔什么都没加载」。所以带返回值探测并重试。
         let js = "(function(){ if (typeof window.__DV_NATIVE_FILES === 'function') {"
-            + " window.__DV_NATIVE_FILES([" + esc + "]); return true; } return false; })()"
+            + " window.__DV_NATIVE_FILES(" + arr + "); return true; } return false; })()"
         webView?.evaluateJavaScript(js) { [weak self] result, err in
             if let err = err {
                 NSLog("inject files failed: \(err)")
@@ -482,14 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         panel.prompt = "导入"
         panel.begin { resp in
             guard resp == .OK, let dir = panel.urls.first else { return }
-            var files: [URL] = []
-            if let en = FileManager.default.enumerator(at: dir,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]) {
-                for case let f as URL in en where !f.hasDirectoryPath { files.append(f) }
-            }
-            let allow = ["rtf", "txt", "md", "markdown", "mdown", "log", "json", "csv", "xml", "yml", "yaml"]
-            self.postFiles(files.filter { allow.contains($0.pathExtension.lowercased()) })
+            self.postFiles(Self.expandFolders([dir]))
         }
     }
 

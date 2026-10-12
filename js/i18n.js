@@ -453,6 +453,7 @@ DV.i18n = (function () {
     "文件超过 {mb} MB，已跳过（避免卡死）": "File is larger than {mb} MB and was skipped to avoid freezing",
     "请至少输入 2 个字符": "Type at least 2 characters",
     "拖放读取失败，请改用「打开文件」": "Could not read the dropped items; use “Open files” instead",
+    "文件太大或太多，这次没能写入会话记忆（不影响打开与编辑）": "Too much content to store in the session this time (opening and editing are unaffected)",
   };
 
   /* 让英文模式下也能查回中文（反向表） */
