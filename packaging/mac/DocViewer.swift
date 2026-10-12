@@ -7,6 +7,40 @@ import WebKit
 
 // MARK: - 本地文件读取（file:// 页面需要显式放行）
 
+/// B6/B18/B12：只允许读回/写回「本次确实交给过页面的文件」，
+/// 并记住打开时的 mtime 与大小，用于发现外部改动。
+final class OpenedFiles {
+    static let shared = OpenedFiles()
+    private var stamp: [String: (mtime: Date, size: Int)] = [:]
+    private let lock = NSLock()
+
+    func allow(_ path: String) {
+        let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: key, isDirectory: &isDir), !isDir.boolValue else { return }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: key)
+        let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        lock.lock(); stamp[key] = (mtime, size); lock.unlock()
+    }
+    func allows(_ path: String) -> Bool {
+        let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        lock.lock(); defer { lock.unlock() }
+        return stamp[key] != nil
+    }
+    /// 与打开时相比是否被外部改过
+    func changedExternally(_ path: String) -> Bool {
+        let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        lock.lock(); let old = stamp[key]; lock.unlock()
+        guard let old = old else { return false }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: key)
+        let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        return mtime != old.mtime || size != old.size
+    }
+    func touch(_ path: String) { allow(path) }
+}
+
 final class LocalSchemeHandler: NSObject, WKURLSchemeHandler {
     private let root: URL
 
@@ -19,14 +53,19 @@ final class LocalSchemeHandler: NSObject, WKURLSchemeHandler {
 
         // 页面资源：docviewer://local/... ；原生选择的外部文件：docviewer://local//abs/path
         var target: URL
-        if abs.hasPrefix("/"), fm.fileExists(atPath: abs) {
+        if abs.hasPrefix("/"), fm.fileExists(atPath: abs), OpenedFiles.shared.allows(abs) {
+            // B18：只服务「本次打开过」的文件，任意绝对路径不再可读
             target = URL(fileURLWithPath: abs).standardizedFileURL
         } else {
             var rel = abs
             if rel.hasPrefix("/") { rel.removeFirst() }
             if rel.isEmpty { rel = "index.html" }
             target = root.appendingPathComponent(rel).standardizedFileURL
-            guard target.path.hasPrefix(root.path) else {          // 防目录穿越
+            // B18：用路径分量判断包含关系，`/…/web-evil` 这类同前缀兄弟目录不再放行
+            let rootParts = root.standardizedFileURL.pathComponents
+            let targetParts = target.pathComponents
+            guard targetParts.count >= rootParts.count,
+                  Array(targetParts.prefix(rootParts.count)) == rootParts else {
                 task.didFailWithError(NSError(domain: "DocViewer", code: 403))
                 return
             }
@@ -111,14 +150,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let cfg = WKWebViewConfiguration()
         cfg.setURLSchemeHandler(LocalSchemeHandler(root: rootURL), forURLScheme: scheme)
         cfg.userContentController.add(self, name: "dv")     // 页面 → 外壳
-        cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")   // 右键「检查元素」
+        if cfg.preferences.responds(to: NSSelectorFromString("developerExtrasEnabled")) {   // B20：私有 API 加保护
+            cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")   // 右键「检查元素」
+        }
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = self
         web.uiDelegate = self
         web.allowsBackForwardNavigationGestures = false
-        web.setValue(false, forKey: "drawsBackground")                      // 避免加载时白闪
+        if web.responds(to: NSSelectorFromString("drawsBackground")) {                     // B20：私有 API 加保护
+            web.setValue(false, forKey: "drawsBackground")                      // 避免加载时白闪
+        }
         self.webView = web
 
         func argNum(_ name: String) -> Double? {
@@ -342,19 +385,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             replyWrite(false, error: "missing text", path: path); return
         }
         let encName = (body["encoding"] as? String) ?? "utf-8"
-        do {
-            let out = try FileWriter.writeText(path: path, text: text, encoding: encName)
-            NSLog("DocViewer: 已写回 %@（%@，%d 字节）", path, encName, out.count)
-            replyWrite(true, error: nil, path: path)
-        } catch {
-            NSLog("DocViewer: 写入失败 %@：%@", path, String(describing: error))
-            replyWrite(false, error: error.localizedDescription, path: path)
+        // B6：只允许写回本次打开过的文件（防止页面里的任意脚本覆写本机文件）
+        guard OpenedFiles.shared.allows(path) else {
+            replyWrite(false, error: "refused: file was not opened by this app", path: path); return
+        }
+        // B12：文件在外部被改过就不盲目覆盖
+        guard !OpenedFiles.shared.changedExternally(path) else {
+            replyWrite(false, error: "changed on disk", path: path); return
+        }
+        // B21：写盘挪到后台队列，别卡住主线程（大文件尤其明显）
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let out = try FileWriter.writeText(path: path, text: text, encoding: encName)
+                OpenedFiles.shared.touch(path)
+                NSLog("DocViewer: 已写回 %@（%@，%d 字节）", path, encName, out.count)
+                DispatchQueue.main.async {
+                    self?.replyWrite(true, error: nil, path: path, encoding: encName, bytes: out.count)
+                }
+            } catch {
+                NSLog("DocViewer: 写入失败 %@：%@", path, String(describing: error))
+                DispatchQueue.main.async {
+                    self?.replyWrite(false, error: error.localizedDescription, path: path)
+                }
+            }
         }
     }
 
-    private func replyWrite(_ ok: Bool, error: String?, path: String) {
+    private func replyWrite(_ ok: Bool, error: String?, path: String,
+                            encoding: String? = nil, bytes: Int? = nil) {
         var obj: [String: Any] = ["ok": ok, "path": path]
         if let e = error { obj["error"] = e }
+        if let enc = encoding { obj["encoding"] = enc }     // A19：真实编码
+        if let n = bytes { obj["bytes"] = n }               // A19：真实字节数
         guard let data = try? JSONSerialization.data(withJSONObject: obj),
               let json = String(data: data, encoding: .utf8) else { return }
         let js = "window.__DV_WRITE_RESULT && window.__DV_WRITE_RESULT(" + json + ")"
@@ -365,11 +427,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func postFiles(_ urls: [URL], attempt: Int = 0) {
         let paths = urls.map { $0.path }
-        let esc = paths.map { p -> String in
-            let q = p.replacingOccurrences(of: "\\", with: "\\\\")
-                       .replacingOccurrences(of: "\"", with: "\\\"")
-            return "\"" + q + "\""
-        }.joined(separator: ",")
+        paths.forEach { OpenedFiles.shared.allow($0) }       // B6：登记为允许读写
+        // B19：用 JSONSerialization 生成数组字面量，文件名里的换行/U+2028 不会再让整批注入失败
+        let json = (try? JSONSerialization.data(withJSONObject: paths)) ?? Data("[]".utf8)
+        let arr = String(data: json, encoding: .utf8) ?? "[]"
+        let esc = arr
         // 页面还没跑完 app.js 时 __DV_NATIVE_FILES 还不存在，直接调用会被静默丢掉，
         // 表现就是「用命令行/拖到图标上打开，偶尔什么都没加载」。所以带返回值探测并重试。
         let js = "(function(){ if (typeof window.__DV_NATIVE_FILES === 'function') {"

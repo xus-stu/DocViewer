@@ -214,11 +214,10 @@ tests/                  Node test suites and the native writer test
 
 ```bash
 node tests/parse.test.js      # parser            (81 assertions)
-node tests/smoke.test.js      # whole app         (372 assertions)
+node tests/smoke.test.js      # whole app         (407 assertions)
 
-# native writer test, operates on real files
-cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
-  && swiftc -O AppendWriter.swift /tmp/main.swift -o /tmp/write_test && /tmp/write_test
+# everything at once (parser + app + native writer)
+bash tests/run-all.sh
 ```
 
 No test framework: plain Node scripts. `smoke.test.js` contains a hand-written mini-DOM, so

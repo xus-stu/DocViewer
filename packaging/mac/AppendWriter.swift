@@ -5,7 +5,8 @@ import Foundation
 enum FileWriter {
 
     enum Failure: LocalizedError {
-        case missingPath, notFound, encodeFailed(String), cannotRead, wouldEmpty, unknownEncoding(String), backupFailed
+        case missingPath, notFound, encodeFailed(String), cannotRead, wouldEmpty, unknownEncoding(String),
+             backupFailed, readOnly, dirNotWritable
         var errorDescription: String? {
             switch self {
             case .missingPath: return "missing path"
@@ -14,7 +15,9 @@ enum FileWriter {
             case .cannotRead: return "cannot read"
             case .wouldEmpty: return "refused to truncate a non-empty file"
             case .unknownEncoding(let e): return "unknown encoding: \(e)"
-            case .backupFailed: return "cannot write backup (.bak is unusable)"; 
+            case .backupFailed: return "cannot write backup (.bak is unusable)"
+            case .readOnly: return "file is read-only"
+            case .dirNotWritable: return "target directory is not writable"; 
             }
         }
     }
@@ -33,10 +36,17 @@ enum FileWriter {
         // 软链：直接 atomic 写会把链接换成普通文件（链接目标不更新），先解析到真实路径
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         let url = FileManager.default.fileExists(atPath: resolved.path) ? resolved : URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: url.path) else { throw Failure.notFound }
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        if exists {
+            guard FileManager.default.isWritableFile(atPath: url.path) else { throw Failure.readOnly }   // B10
+        } else {
+            // B25：允许新建，但父目录要可写，并给出和「文件只读」不同的错误
+            let dir = url.deletingLastPathComponent().path
+            guard FileManager.default.isWritableFile(atPath: dir) else { throw Failure.dirNotWritable }
+        }
 
         // 拒绝把有内容的文件清空（前端 bug / 消息异常时的最后一道闸）
-        let old = (try? Data(contentsOf: url)) ?? Data()
+        let old = exists ? ((try? Data(contentsOf: url)) ?? Data()) : Data()
         if data.isEmpty && !old.isEmpty { throw Failure.wouldEmpty }
 
         if backup {
@@ -60,7 +70,18 @@ enum FileWriter {
     @discardableResult
     static func writeText(path: String, text: String, encoding: String, backup: Bool = true) throws -> Data {
         guard let enc = stringEncoding(encoding) else { throw Failure.unknownEncoding(encoding) }
-        guard let data = text.data(using: enc, allowLossyConversion: false) else {
+        // B11：HTML 解析会把 CRLF 规范成 LF；写回时按原文件的换行风格还原
+        var out = text
+        if let old = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let oldText = String(data: old, encoding: enc) ?? String(data: old, encoding: .utf8) {
+            let crlf = oldText.components(separatedBy: "\r\n").count - 1
+            let loneLf = oldText.replacingOccurrences(of: "\r\n", with: "").components(separatedBy: "\n").count - 1
+            if crlf > 0 && loneLf == 0 {
+                out = text.replacingOccurrences(of: "\r\n", with: "\n")
+                          .replacingOccurrences(of: "\n", with: "\r\n")
+            }
+        }
+        guard let data = out.data(using: enc, allowLossyConversion: false) else {
             throw Failure.encodeFailed(encoding)
         }
         return try writeAll(path: path, data: data, backup: backup)

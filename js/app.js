@@ -29,8 +29,24 @@ window.DV = window.DV || {};
   const MAX_TOTAL = 4 * 1024 * 1024;
 
   const els = {};
+  const MAX_BYTES = 48 * 1024 * 1024;      // 超过直接拒绝（读进内存 + 两次全文遍历会卡死）
+  const BIG_BYTES = 6 * 1024 * 1024;       // 超过只做纯文本展示，不做统计与高亮
 
   /* ================= 编码检测 ================= */
+
+  /** 中文/日韩字符占比，用来判断哪种解码结果更"像话" */
+  function cjkRatio(t) {
+    if (!t.length) return 0;
+    const m = t.match(/[\u3000-\u9fff\uff00-\uffef]/g);
+    return m ? m.length / t.length : 0;
+  }
+  /** UTF-8 解出来是不是一堆"不该出现的拉丁补充/私用/替换字符" */
+  function looksLikeMojibake(t) {
+    if (!t.length) return false;
+    const bad = t.match(/[\u0080-\u024f\ue000-\uf8ff\ufffd]/g);
+    return !!bad && bad.length / t.length > 0.08;
+  }
+
   function decodeBuffer(buf, hint) {
     const bytes = new Uint8Array(buf);
     // BOM
@@ -58,11 +74,22 @@ window.DV = window.DV || {};
     order.push('utf-8', 'gb18030', 'big5', 'windows-1252', 'utf-16le');
 
     const seen = new Set();
+    const results = {};
     for (const enc of order) {
       if (seen.has(enc)) continue;
       seen.add(enc);
       const t = tryDec(enc);
-      if (t != null) return { text: t, encoding: enc === 'gb18030' ? 'GB18030/GBK' : enc.toUpperCase() };
+      if (t == null) continue;
+      results[enc] = t;
+      // A12：UTF-8 能过不代表就是 UTF-8 —— GBK 字节偶尔也会构成合法 UTF-8。
+      // 出现可疑迹象（拉丁补充区/私用区/罕见符号占比高）且 GBK 解出来更像中文时，改用 GBK。
+      if (enc === 'utf-8') {
+        const gbk = tryDec('gb18030');
+        if (gbk && looksLikeMojibake(t) && cjkRatio(gbk) > cjkRatio(t) + 0.15) {
+          return { text: gbk, encoding: 'GB18030/GBK' };
+        }
+      }
+      return { text: t, encoding: enc === 'gb18030' ? 'GB18030/GBK' : enc.toUpperCase() };
     }
     // 全部失败：非致命 UTF-8
     return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'UTF-8 (替换非法字节)' };
@@ -128,8 +155,11 @@ window.DV = window.DV || {};
     /** 多字节编码：整段解码，非法序列直接丢弃（保留其中合法的字符） */
     function decodeStrict(arr) {
       try {
+        // 解码失败时**保留** U+FFFD：以前把替换符整段删掉，码页猜错时表现为"字凭空消失"，
+        // 用户和日志都察觉不到。现在保留成可见的替换符，并记一次告警（A10）。
         const out = decoder.decode(arr);
-        return out.indexOf('\uFFFD') >= 0 ? out.replace(/\uFFFD/g, '') : out;
+        if (out.indexOf('\uFFFD') >= 0) badBytes += (out.match(/\uFFFD/g) || []).length;
+        return out;
       } catch (e) {
         let out = '';
         for (let k = 0; k < arr.length; k++) {
@@ -142,6 +172,7 @@ window.DV = window.DV || {};
       }
     }
 
+    let badBytes = 0;
     return function decode(bytes) {
       // 兼容旧接口：传入的是 'hh' 这样的字符串
       if (typeof bytes === 'string') {
@@ -273,19 +304,32 @@ window.DV = window.DV || {};
     for (let idx = 0; idx < fileRecords.length; idx++) {
       const item = fileRecords[idx];
       try {
+        // A13：先看大小再读进内存
+        const size = item.file && typeof item.file.size === 'number' ? item.file.size : 0;
+        if (size > MAX_BYTES) {
+          throw new Error(DV.t('文件超过 {mb} MB，已跳过（避免卡死）', { mb: Math.round(MAX_BYTES / 1048576) }));
+        }
         const buf = await item.file.arrayBuffer();
         const hint = /\.rtf$/i.test(item.name) ? 'gbk' : '';
         const dec = decodeBuffer(buf, hint);
         item.text = dec.text;
         item.encoding = dec.encoding;
         item.bytes = buf.byteLength;
-        item.lines = countLines(dec.text);
+        item.big = buf.byteLength > BIG_BYTES;
+        item.lines = item.big ? 0 : countLines(dec.text);      // 大文件不做全文统计
         item.chars = dec.text.length;
         renderFile(item);
         state.files.push(item);
         ok++;
       } catch (e) {
         fail++;
+        // A25：失败的文件也进列表，才会渲染出"读取失败"那一行（以前只有日志里有一行）
+        try {
+          item.error = (e && e.message) || String(e);
+          item.text = '';
+          item.bytes = item.bytes || 0;
+          state.files.push(item);
+        } catch (e2) { /* 忽略 */ }
         item.error = e.message || String(e);
         DV.Log.error('读取失败 ' + item.name + '：' + item.error);
       }
@@ -717,7 +761,7 @@ window.DV = window.DV || {};
     const mf = DV.Settings.get().metaFields || {};
     const metaParts = [];
     if (mf.path) metaParts.push(item.path || DV.t(DV.KIND[item.kind].label));
-    if (mf.type) metaParts.push(DV.t(k.label));
+    if (mf.type) metaParts.push(DV.t(k && k.label ? k.label : DV.KIND.other.label));
     if (mf.size) metaParts.push(DV.fmtBytes(item.bytes || item.size));
     if (mf.encoding) metaParts.push(item.encoding || '—');
     if (mf.lines && item.lines) metaParts.push(DV.fmtNum(item.lines) + ' ' + DV.t('行'));
@@ -784,7 +828,7 @@ window.DV = window.DV || {};
 
     // 统计
     const nodes = doc.getElementsByTagName('*').length;
-    const words = (item.text.match(/[A-Za-z0-9_\u4e00-\u9fa5]+/g) || []).length;
+    const words = item.big ? 0 : (item.text.match(/[A-Za-z0-9_\u4e00-\u9fa5]+/g) || []).length;
     const info = Object.assign({}, item.info || {});
     if (item.merged) state.activePart = 0;
     DV.Debug.setDocument({
@@ -893,10 +937,16 @@ window.DV = window.DV || {};
     setHits('');
   }
 
+  const MAX_HITS = 3000;                   // 命中总数上限：超了就停止高亮，只报数
+
   function runSearch(term) {
     state.query = term;
     clearSearch();
     if (!term || term.length < 1) { setHits(''); return; }
+    if (term.length < 2) {                    // 单字符搜索在长文里必然爆炸
+      setHits(DV.t('请至少输入 2 个字符'));
+      return;
+    }
     const root = els.doc;
     const needle = term.toLowerCase();
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -918,7 +968,10 @@ window.DV = window.DV || {};
       const low = txt.toLowerCase();
       let from = 0, at;
       const hits = [];
-      while ((at = low.indexOf(needle, from)) !== -1) { hits.push(at); from = at + needle.length; if (hits.length > 500) break; }
+      while ((at = low.indexOf(needle, from)) !== -1) {
+        hits.push(at); from = at + needle.length;
+        if (hits.length > 500 || state.matches.length + hits.length >= MAX_HITS) break;
+      }
       if (!hits.length) return;
       const frag = document.createDocumentFragment();
       let cursor = 0;
@@ -964,6 +1017,17 @@ window.DV = window.DV || {};
     try { return DV.Settings.get().rememberSession !== false; } catch (e) { return true; }
   }
 
+  /**
+   * A16：关掉「记住会话」时，把已经存进 localStorage 的正文清掉。
+   * 否则用户以为不再记忆，实际上每个打开过的文件全文仍留在浏览器存储里。
+   */
+  function purgeSession() {
+    try {
+      localStorage.removeItem('docviewer.session');
+      DV.Log.info('已清除本地保存的会话内容');
+    } catch (e) { /* 忽略 */ }
+  }
+
   function saveSession() {
     if (!sessionOn()) return;
     try {
@@ -997,7 +1061,9 @@ window.DV = window.DV || {};
         list.push(rec(f));
       });
       localStorage.setItem('docviewer.session', JSON.stringify({
-        v: 1, at: Date.now(), active: active() ? active().name : null, files: list,
+        v: 1, at: Date.now(), active: active() ? active().name : null,
+        activeId: active() ? active().id : null,      // A18：同名文件也能选对
+        files: list,
         wrap: state.wrap, raw: state.raw,
       }));
     } catch (e) {
@@ -1116,6 +1182,7 @@ window.DV = window.DV || {};
 
   const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
   let scrollSaveTimer = 0;               // 滚动后延迟写会话
+  let sessionWriteTimer = 0;             // 会话写入去抖
   let pendingWrite = null;               // 这次写回的内容快照（回包只认它）
   let saveTimeoutTimer = 0;              // 写回确认超时
   let saveTimer = 0, dirty = false, wantFocus = false;
@@ -1261,15 +1328,19 @@ window.DV = window.DV || {};
         }
         item.encoding = snap.encoding === 'latin1' ? item.encoding : snap.encoding;
       }
+      if (typeof res.bytes === 'number' && res.bytes > 0) item.bytes = res.bytes;   // A19：真实字节数
+      else item.bytes = item.text.length;                                          // 没有回执时退化为字符数
+      if (res.encoding) item.encoding = res.encoding;                              // A19：写回后的实际编码
       item.lines = countLines(item.text);
       item.chars = item.text.length;
-      item.bytes = item.text.length;
       syncRowClasses();
       saveSession();
     }
     // 写回的是当前打开的这个文件时才算「干净」
     if (!snap || !active() || active().fullPath === res.path) dirty = false;
-    setSaveState('saved');
+    // A24：只更新与当前文件相关的状态，别把另一个文件的"未保存"错误地刷成"已保存"
+    if (!active() || active().fullPath === res.path) setSaveState('saved');
+    else refreshSaveState();
     DV.Log.ok('已写回源文件：' + res.path);
   };
 
@@ -1377,7 +1448,9 @@ window.DV = window.DV || {};
     state.wrap = data.wrap !== false;
     state.raw = !!data.raw;
     refreshList();
-    const tgt = state.files.find(f => f.name === data.active) || state.files[0];
+    // A18：优先用 id（同名文件不会选错），没有 id 的旧会话再退回按名字找
+    const tgt = (data.activeId && state.files.find(f => f.id === data.activeId))
+      || state.files.find(f => f.name === data.active) || state.files[0];
     if (tgt) select(tgt.id);
     if (legacyMerged.length) {
       DV.Log.warn('旧会话里的 ' + legacyMerged.length + ' 个拼接文档缺少来源数据，已跳过（请重新拼接）');
@@ -1477,18 +1550,33 @@ window.__DV_NATIVE_FILES = function (paths) {
       dragDepth++;
       dz.classList.add('show');
     });
-    window.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    const hasFiles = e => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    window.addEventListener('dragover', e => {
+      // A15：不是拖文件就不拦截，否则编辑器里拖动选中文本等默认行为会被取消
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
     window.addEventListener('dragleave', e => {
+      if (!hasFiles(e)) return;
       e.preventDefault();
       dragDepth = Math.max(0, dragDepth - 1);
       if (!dragDepth) dz.classList.remove('show');
     });
     window.addEventListener('drop', async e => {
+      if (!hasFiles(e)) return;                 // 编辑器内的拖放交给浏览器默认处理
       e.preventDefault();
       dragDepth = 0;
       dz.classList.remove('show');
-      const files = await collectDropped(e.dataTransfer);
-      if (!files.length) { DV.toast('没有可读取的文件', 'warn'); return; }
+      let files = [];
+      try {
+        files = await collectDropped(e.dataTransfer);
+      } catch (err) {
+        DV.Log.error('拖放读取失败：' + ((err && err.message) || err));
+        DV.toast(DV.t('拖放读取失败，请改用「打开文件」'), 'err', 3200);
+        return;
+      }
+      if (!files.length) { DV.toast(DV.t('没有可读取的文件'), 'warn'); return; }
       ingest(files);
     });
   }

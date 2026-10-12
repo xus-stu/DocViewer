@@ -450,6 +450,9 @@ DV.i18n = (function () {
     /* ---- 写回保护提示 ---- */
     "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存": "This RTF contains images, headers/footers or footnotes that the reader does not model; writing back would delete them, so the save was blocked",
     "写回没有收到确认，改动仍标记为未保存": "The write was not confirmed; the change is still marked unsaved",
+    "文件超过 {mb} MB，已跳过（避免卡死）": "File is larger than {mb} MB and was skipped to avoid freezing",
+    "请至少输入 2 个字符": "Type at least 2 characters",
+    "拖放读取失败，请改用「打开文件」": "Could not read the dropped items; use “Open files” instead",
   };
 
   /* 让英文模式下也能查回中文（反向表） */

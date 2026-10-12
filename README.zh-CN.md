@@ -184,7 +184,7 @@ tests/                  Node 测试与原生写回测试
 
 ```bash
 node tests/parse.test.js      # 解析器（81 项）
-node tests/smoke.test.js      # 整个应用（372 项）
+node tests/smoke.test.js      # 整个应用（407 项）
 
 # 原生写回测试，需要真实文件
 cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \

@@ -25,10 +25,22 @@ DV.md = (function () {
         stash('<img src="' + DV.escAttr(src) + '" alt="' + DV.escAttr(alt) + '"' +
           (title ? ' title="' + DV.escAttr(title) + '"' : '') + ' loading="lazy">'));
 
+    /**
+     * A17：链接协议白名单。
+     * 只放行 http/https/mailto/页内锚点 —— 否则 `[x](javascript:alert(1))`
+     * 会生成一个可点的 <a href="javascript:…">，而页面持有原生写回桥。
+     */
+    function safeHref(h) {
+      const u = String(h || '').trim();
+      if (/^(https?:|mailto:|tel:|#)/i.test(u)) return u;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return '#';     // 其它协议一律降级成空锚点
+      return u;                                            // 相对路径
+    }
+
     // 3) 链接 [text](href "title")
     s = s.replace(/\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,
       (m, txt, href, title) =>
-        stash('<a href="' + DV.escAttr(href) + '" target="_blank" rel="noreferrer"' +
+        stash('<a href="' + DV.escAttr(safeHref(href)) + '" target="_blank" rel="noreferrer"' +
           (title ? ' title="' + DV.escAttr(title) + '"' : '') + '>' + inline(txt) + '</a>'));
 
     // 4) 引用式链接 [text][id] / [text][] —— 简化：直接退化为文本
@@ -38,7 +50,7 @@ DV.md = (function () {
     s = s.replace(/<((?:https?:\/\/|mailto:)[^>\s]+)>/g, (m, url) =>
       stash('<a href="' + DV.escAttr(url) + '" target="_blank" rel="noreferrer">' + esc(url) + '</a>'));
     s = s.replace(/(^|[\s(（])((?:https?:\/\/)[^\s<>()（）]+)/g,
-      (m, pre, url) => pre + stash('<a href="' + DV.escAttr(url) + '" target="_blank" rel="noreferrer">' + esc(url) + '</a>'));
+      (m, pre, url) => pre + stash('<a href="' + DV.escAttr(safeHref(url)) + '" target="_blank" rel="noreferrer">' + esc(url) + '</a>'));
 
     // 6) 裸 HTML 一律转义（安全）
     s = esc(s);

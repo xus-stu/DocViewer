@@ -113,6 +113,17 @@ def main():
         img = master if px == 1024 else master.resize((px, px), Image.LANCZOS)
         img.save(os.path.join(iconset, name))
     print("iconset 已生成：", iconset)
+    # B13：以前只生成 iconset，从不调用 iconutil，所以 out（.icns）永远不更新，
+    # 打包时用的还是旧图标。这里补上转换并校验产物。
+    try:
+        import subprocess
+        subprocess.run(["iconutil", "-c", "icns", iconset, "-o", out], check=True)
+        if not os.path.exists(out):
+            raise RuntimeError("iconutil 没有产出 .icns")
+        print("icns 已生成：", out, os.path.getsize(out), "字节")
+    except FileNotFoundError:
+        print("找不到 iconutil（需要 macOS），只生成了 iconset：", iconset)
+        raise SystemExit(1)
     print("预览：", os.path.join(iconset, "icon_512x512@2x.png"))
 
 

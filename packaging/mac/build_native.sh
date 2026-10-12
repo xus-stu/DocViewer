@@ -8,7 +8,11 @@ APP="$OUT/DocViewer.app"
 VER="$(sed -n "s/.*APP_VERSION = '\([^']*\)'.*/\1/p" "$SRC/js/app.js" | head -1)"; VER="${VER:-1.0.0}"
 
 echo "==> 1/4 编译 Swift 外壳（WKWebView）"
-rm -rf "$APP"
+# B14：先装到临时目录，编译成功再替换桌面上的 app ——
+# 否则编译失败/中断会留下"原来的可用 app 已被删掉"的局面
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+APP="$STAGE/DocViewer.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -framework Cocoa -framework WebKit \
   "$HERE/DocViewer.swift" "$HERE/AppendWriter.swift" -o "$APP/Contents/MacOS/DocViewer"
@@ -60,9 +64,12 @@ PLIST
 
 echo "==> 4/4 签名（ad-hoc）"
 if ! codesign --force --deep --sign - "$APP" >/dev/null 2>&1; then
-
   echo "  ✗ 签名失败"; exit 1
-
 fi
+
+# B14：到这一步都成功了，才替换目标目录里的旧 app
+rm -rf "$OUT/DocViewer.app"
+mv "$APP" "$OUT/DocViewer.app"
+APP="$OUT/DocViewer.app"
 
 echo "完成 → $APP   版本 $VER"

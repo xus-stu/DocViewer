@@ -65,8 +65,7 @@ DV.Debug = (function () {
     N.docKv.innerHTML = kvHtml(docKv);
     N.perfKv.innerHTML = kvHtml(perfObj());
     N.envKv.innerHTML = kvHtml(envObj());
-    drawGraph();                       // 曲线是画在 canvas 上的，不随 innerHTML 更新
-    drawGraph();
+    drawGraph();                       // 曲线画在 canvas 上，不随 innerHTML 更新（A20：原来画了两遍）
     if (N.fpsNow) N.fpsNow.textContent = animFps.toFixed(1);
     if (N.frameMs) N.frameMs.textContent = frameMs.toFixed(2);
   }
@@ -269,10 +268,13 @@ DV.Debug = (function () {
   }
 
   function setProbe(on, max) {
+    const wasOn = probeOn;
     probeOn = !!on;
     if (max !== undefined) probeMax = !!max;
-    if (probeOn) { probe = 0; probeLastT = 0; setTimeout(probeLoop, 0); }
-    else probeTps = 0;
+    if (probeOn) {
+      if (wasOn) return;                 // A21：已在运行就不再起第二个循环（否则计数虚高、CPU 成倍）
+      probe = 0; probeLastT = 0; setTimeout(probeLoop, 0);
+    } else probeTps = 0;
     DV.Log.info('高帧率探针：' + (probeOn ? (probeMax ? '已开启 · 放开模式（会跑满 CPU）' : '已开启 · 受控模式') : '已关闭'));
   }
 
@@ -575,7 +577,7 @@ DV.Debug = (function () {
     /** 输出到日志 + 复制到剪贴板 */
     emitReport(item) {
       const txt = api.report(item);
-      DV.Log.entries.length = 0;
+      if (DV.Log.clear) DV.Log.clear(); else DV.Log.entries.length = 0;   // A22：走日志模块自己的清理
       txt.split('\n').slice(-400).forEach(l => DV.Log.info(l));
       paintLog();
       let copied = false;
