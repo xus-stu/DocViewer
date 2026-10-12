@@ -337,7 +337,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard let path = body["path"] as? String, !path.isEmpty else {
             replyWrite(false, error: "missing path", path: ""); return
         }
-        let text = (body["text"] as? String) ?? ""
+        // text 必须真的是字符串：以前 `?? ""` 会在消息异常时把整份文件截成 0 字节
+        guard let text = body["text"] as? String else {
+            replyWrite(false, error: "missing text", path: path); return
+        }
         let encName = (body["encoding"] as? String) ?? "utf-8"
         do {
             let out = try FileWriter.writeText(path: path, text: text, encoding: encName)

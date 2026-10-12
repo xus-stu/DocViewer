@@ -1658,6 +1658,16 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     ok(out1.indexOf('\\uc1') >= 0, '\\uc1 文件仍声明 \\uc1');
     ok(/\\u\d+\?/.test(out1), '\\uc1 时补一个 ? 替代字符', JSON.stringify(out1.slice(-40)));
 
+    // 3.5) 真实 DOM 形状：真实页面里 #doc 的直接子节点是 <div class="rtf-body">，
+    //      不剥掉这层壳，整篇会被当成一个块、所有段落并成一段（审查报告 A#1）
+    const realShape = mk('DIV', [mk('DIV', [mk('P', [tx('第一段')]), mk('P', [tx('第二段')]), mk('P', [tx('第三段')])])]);
+    realShape.childNodes[0].className = 'rtf-body';
+    const outReal = DV.rtf.rebuildSource(src, realShape);
+    ok((outReal.match(/\\par/g) || []).length >= 3, '带 rtf-body 外壳时段落仍分开（不会并成一段）',
+       (outReal.match(/\\par/g) || []).length + ' 个 par');
+    const realText = DV.rtf.parse(outReal, { decodeHex: dec }).html.replace(/<[^>]+>/g, '');
+    ok(realText.indexOf('第一段') >= 0 && realText.indexOf('第三段') >= 0, '三段文字都在', JSON.stringify(realText));
+
     // 4) 无 \uc 声明时按 RTF 默认的 1 处理
     ok(DV.rtf.detectUc('{\\rtf1\\ansi\\pard x}') === 1, '无声明时默认 \\uc1');
     ok(DV.rtf.detectUc(src) === 0, '源文件声明为 \\uc0 时取 0');

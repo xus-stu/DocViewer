@@ -81,12 +81,11 @@ window.DV = window.DV || {};
     const cs = /\\fcharset(\d+)/i.exec(head);
     if (cs) {
       const n = parseInt(cs[1], 10);
-      if (n === 134) return 936;                       // GB2312 / GBK
-      if (n === 136) return 950;                       // Big5
-      if (n === 128 || n === 129) return 932;          // Shift-JIS
-      if (n === 0 || n === 1 || n === 2 || n === 77) return 1252;   // 西文
+      // 按 RTF 规范的字符集表映射；查不到的按西文处理，不再一律当 GBK
+      if (DV.rtf.CHARSET_PAGES && DV.rtf.CHARSET_PAGES[n]) return DV.rtf.CHARSET_PAGES[n];
+      if (n >= 128) return 1252;
     }
-    return 936;
+    return 936;                       // 完全没声明时的历史默认值
   }
 
   /**
@@ -158,6 +157,22 @@ window.DV = window.DV || {};
       if (decoder) return decodeStrict(arr);
       return Array.prototype.map.call(arr, single).join('');
     };
+  }
+
+  /**
+   * 展示用的编码标签 → 规范化编码名。
+   * 以前直接把 'GB18030/GBK' 这种显示名发给原生，原生白名单匹配不上就
+   * 静默回退 UTF-8，GBK / UTF-16 文件被悄悄改写成 UTF-8。
+   */
+  function encName(label) {
+    const s = String(label || '').toUpperCase();
+    if (s.indexOf('GB') >= 0 || s.indexOf('936') >= 0) return 'gb18030';
+    if (s.indexOf('BIG5') >= 0 || s.indexOf('950') >= 0) return 'big5';
+    if (s.indexOf('SHIFT') >= 0 || s.indexOf('932') >= 0) return 'shift_jis';
+    if (s.indexOf('UTF-16') >= 0) return s.indexOf('BE') >= 0 ? 'utf-16be' : 'utf-16le';
+    if (s.indexOf('UTF-8') >= 0) return 'utf-8';
+    if (s.indexOf('1252') >= 0 || s.indexOf('LATIN') >= 0) return 'windows-1252';
+    return 'utf-8';
   }
 
   function gbkSupported() {
@@ -690,6 +705,10 @@ window.DV = window.DV || {};
   }
 
   function paintDoc(item, opts) {
+    // A#9：DOM 里可能有还没落盘的编辑，重绘会拿旧的 item.text 覆盖它 —— 先写出去
+    if (dirty && canEdit() && !(opts && opts.keepScroll === 'noflush')) {
+      try { saveEdit(); } catch (e) { /* 忽略 */ }
+    }
     const k = kindBadge(item);
     // 重绘前的真实位置：写回源文件后的重绘要靠它原地不动
     const liveScrollTop = els.docScroll.scrollTop;
@@ -829,6 +848,10 @@ window.DV = window.DV || {};
   }
 
   function closeFile(id) {
+    // A#7：要关的是当前正在编辑且有未落盘改动的文件，先落盘再关
+    const act = active();
+    if (act && act.id === id && dirty && canEdit()) saveEdit();
+    clearTimeout(saveTimer);
     const i = state.files.findIndex(f => f.id === id);
     if (i < 0) return;
     const [f] = state.files.splice(i, 1);
@@ -1093,6 +1116,8 @@ window.DV = window.DV || {};
 
   const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
   let scrollSaveTimer = 0;               // 滚动后延迟写会话
+  let pendingWrite = null;               // 这次写回的内容快照（回包只认它）
+  let saveTimeoutTimer = 0;              // 写回确认超时
   let saveTimer = 0, dirty = false, wantFocus = false;
 
   /** 手动保存（工具栏「保存」/ ⌘S）：只读或没有改动时给出提示，不写文件 */
@@ -1155,33 +1180,59 @@ window.DV = window.DV || {};
   }
 
   /** 保存编辑结果：整份文件写回（RTF 用原文件的前言 + 重新序列化的正文） */
+  /** RTF 里有没有「解析时被跳过、写回时会被删掉」的内容 */
+  function hasUnmodeledRtf(item) {
+    const src = String((item && (item.rawSrc || item.text)) || '');
+    return /\\pict\b|\\shppict\b|\\nonshppict\b|\\object\b|\\shp\b|\\header\b|\\footer\b|\\footnote\b|\\annotation\b/.test(src);
+  }
+
   function saveEdit() {
     const tgt = editTarget();
     if (!tgt) return false;
     const item = tgt.item;
     clearTimeout(saveTimer);
-    dirty = false;
-    setSaveState('saving');
+    setSaveState('saving');        // dirty 等原生回包确认后再清（A#8）
+
+    // A#3：含图片 / 页眉页脚 / 脚注 / 域这类没建模的内容时，写回会把它们整段删掉
+    if (item.kind === 'rtf' && !tgt.plain && hasUnmodeledRtf(item)) {
+      DV.toast(DV.t('这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存'), 'err', 4600);
+      DV.Log.warn('已阻止写回（含未建模内容）：' + item.name);
+      setSaveState('unsaved');
+      dirty = true;
+      return false;
+    }
 
     let payload;
     if (item.kind === 'rtf' && !tgt.plain) {
-      payload = { text: DV.rtf.rebuildSource(item.rawSrc || '', els.doc), encoding: 'utf-8' };
-      // RTF 用 ISO-8859-1 写回：snippet 是 ASCII，原有字节保持原样
-      payload.encoding = 'latin1';
+      // 前言里有从原文件读出的原始字节（字体名等），必须按 latin1 原样写回
+      payload = { text: DV.rtf.rebuildSource(item.rawSrc || '', els.doc), encoding: 'latin1' };
     } else {
-      payload = { text: domToText(els.doc), encoding: item.encoding || 'utf-8' };
+      payload = { text: domToText(els.doc), encoding: encName(item.encoding) };
     }
     DV.Log.info('写回 ' + item.fullPath + '（' + (payload.encoding) + '，' +
       payload.text.length + ' 字符）');
+    // A#2：把这次要写的内容留一份快照；回包只认这份快照，绝不再从 DOM 回读
+    //（否则用户切到别的文件后，回包会把 B 的正文写进 A 的条目）
+    pendingWrite = { path: item.fullPath, text: payload.text, encoding: payload.encoding, at: Date.now() };
     try {
       nativeBridge().postMessage(Object.assign({
         action: 'writeFile', path: item.fullPath,
       }, payload));
     } catch (e) {
-      setSaveState('');
+      setSaveState('unsaved');
       DV.toast(DV.t('写入失败') + '：' + (e.message || e), 'err', 4000);
       return false;
     }
+    // 原生没回包时别一直停在「保存中…」
+    clearTimeout(saveTimeoutTimer);
+    saveTimeoutTimer = setTimeout(() => {
+      if (pendingWrite && Date.now() - pendingWrite.at >= 8000) {
+        pendingWrite = null;
+        dirty = true;
+        setSaveState('unsaved');
+        DV.toast(DV.t('写回没有收到确认，改动仍标记为未保存'), 'err', 4200);
+      }
+    }, 8200);
     return true;
   }
 
@@ -1189,29 +1240,35 @@ window.DV = window.DV || {};
   window.__DV_WRITE_RESULT = function (res) {
     if (!res || !res.ok) {
       dirty = true;
+      pendingWrite = null;
       setSaveState('unsaved');
       DV.toast(DV.t('写入失败') + '：' + ((res && res.error) || '?'), 'err', 4200);
       DV.Log.error('写入失败：' + JSON.stringify(res));
       return;
     }
+    clearTimeout(saveTimeoutTimer);
     const item = state.files.find(f => f.fullPath === res.path);
+    const snap = (pendingWrite && pendingWrite.path === res.path) ? pendingWrite : null;
+    pendingWrite = null;
     if (item) {
-      /* 只更新数据，绝不重绘文档。
-         重绘会把滚动位置弹回顶部、丢掉光标与选区，正在打字的人会直接被打断。
-         这里把重新渲染好的 HTML 存进 item.html，等下次真正需要显示时再用。 */
-      if (item.kind === 'rtf' && !isPlainView(item)) {
-        item.text = DV.rtf.rebuildSource(item.rawSrc || '', els.doc);
-        item.rawSrc = item.text;
-        renderFile(item);              // 只解析、不落 DOM
-      } else {
-        item.text = domToText(els.doc);
+      /* 只用写回时的快照更新数据，绝不从 els.doc 回读：
+         回包是异步的，那时 els.doc 可能已经是另一个文件的正文（A#2）。 */
+      if (snap) {
+        item.text = snap.text;
+        if (item.kind === 'rtf' && !isPlainView(item)) {
+          item.rawSrc = snap.text;
+          renderFile(item);            // 重新解析成 item.html，但不落 DOM
+        }
+        item.encoding = snap.encoding === 'latin1' ? item.encoding : snap.encoding;
       }
       item.lines = countLines(item.text);
       item.chars = item.text.length;
       item.bytes = item.text.length;
       syncRowClasses();
-      saveSession();                   // 正文变了，顺手把会话里的内容同步一下
+      saveSession();
     }
+    // 写回的是当前打开的这个文件时才算「干净」
+    if (!snap || !active() || active().fullPath === res.path) dirty = false;
     setSaveState('saved');
     DV.Log.ok('已写回源文件：' + res.path);
   };

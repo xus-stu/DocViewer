@@ -59,6 +59,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> 4/4 签名（ad-hoc）"
-codesign --force --deep --sign - "$APP" 2>&1 | tail -2 || echo "   (签名跳过，不影响本机运行)"
+if ! codesign --force --deep --sign - "$APP" >/dev/null 2>&1; then
+
+  echo "  ✗ 签名失败"; exit 1
+
+fi
 
 echo "完成 → $APP   版本 $VER"

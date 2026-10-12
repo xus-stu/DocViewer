@@ -447,6 +447,9 @@ DV.i18n = (function () {
     "移动鼠标唤出底部控制条，点「退出沉浸」返回。": "Move the mouse to reveal the bottom control strip; click “Leave focus mode” to return.",
     "调试面板 <kbd>F3</kbd>；诊断报告用上面的按钮。": "Debug panel: <kbd>F3</kbd>. Diagnostics: the button above.",
     "（首次写入会生成 .bak 备份）。也可以随时点工具栏的「保存」立即写回。 RTF 会按文件自身的字体与字号重新生成。": " (a .bak backup is created on the first write). You can also click Save in the toolbar at any time. RTF is regenerated using the file’s own font and size.",
+    /* ---- 写回保护提示 ---- */
+    "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存": "This RTF contains images, headers/footers or footnotes that the reader does not model; writing back would delete them, so the save was blocked",
+    "写回没有收到确认，改动仍标记为未保存": "The write was not confirmed; the change is still marked unsaved",
   };
 
   /* 让英文模式下也能查回中文（反向表） */

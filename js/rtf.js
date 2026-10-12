@@ -1102,6 +1102,13 @@ DV.rtf = (function () {
    * 如果写成 \uc1，任何按规范读的软件都会把转义后面那个字符当成替代字符吃掉，
    * 被吃掉的就是正文里的右引号之类。找不到声明时 RTF 默认是 1。
    */
+  /** RTF \fcharsetN → 代码页（按规范的字符集表） */
+  const FCHARSET = {
+    0: 1252, 1: 1252, 2: 1252, 77: 10000, 128: 932, 129: 949, 130: 1361, 134: 936,
+    136: 950, 161: 1253, 162: 1254, 163: 1258, 177: 1255, 178: 1256, 186: 1257,
+    204: 1251, 238: 1250, 254: 874, 255: 1252,
+  };
+
   function detectUc(src) {
     const s = String(src || '');
     const at = s.indexOf('\\pard');
@@ -1245,11 +1252,31 @@ DV.rtf = (function () {
   /** 组装整份新文件：前言 + 新正文 + } */
   function rebuildSource(src, htmlRoot) {
     const sp = splitSource(src);
-    const newBody = htmlToRtf(htmlRoot, { source: src });
+    // 真实 DOM 里 #doc 的直接子节点是最外层 <div class="rtf-body">，段落语义在里面。
+    // 不剥掉这层壳，htmlToRtf 会把整篇当成「一个块」，所有段落并成一段（主路径上的数据破坏）。
+    let root = htmlRoot;
+    if (root && root.nodeType === 1) {
+      let wrap = null;
+      try {
+        if (typeof root.querySelector === 'function') wrap = root.querySelector('.rtf-body');
+      } catch (e) { wrap = null; }
+      if (!wrap) {
+        const kids = root.childNodes || [];
+        for (let i = 0; i < kids.length; i++) {
+          const k = kids[i];
+          if (k && k.nodeType === 1) {
+            const cls = (k.className || (k.getAttribute && k.getAttribute('class')) || '') + '';
+            if (/(^|\s)rtf-body(\s|$)/.test(cls)) { wrap = k; break; }
+          }
+        }
+      }
+      if (wrap) root = wrap;
+    }
+    const newBody = htmlToRtf(root, { source: src });
     // htmlToRtf 末尾自带 }，这里只拼 前言 + 新正文
     return sp.preamble + newBody;
   }
 
   return { parse, extractText, escapeText, dominantFs, defaultFontIndex,
-    splitSource, htmlToRtf, rebuildSource, detectUc };
+    splitSource, htmlToRtf, rebuildSource, detectUc, CHARSET_PAGES: FCHARSET };
 })();
