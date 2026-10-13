@@ -45,22 +45,34 @@ enum FileWriter {
             guard FileManager.default.isWritableFile(atPath: dir) else { throw Failure.dirNotWritable }
         }
 
-        // 拒绝把有内容的文件清空（前端 bug / 消息异常时的最后一道闸）
-        let old = exists ? ((try? Data(contentsOf: url)) ?? Data()) : Data()
+        // 拒绝把有内容的文件清空（前端 bug / 消息异常时的最后一道闸）。
+        // 读取失败必须报错中止：以前用 try? 吞掉，读不到就当成「空文件」，
+        // 于是 wouldEmpty 这道闸形同虚设，还会拿一份 0 字节的假备份覆盖 .bak.prev。
+        let old: Data
+        if exists {
+            do { old = try Data(contentsOf: url) }
+            catch { throw Failure.cannotRead }
+        } else {
+            old = Data()
+        }
         if data.isEmpty && !old.isEmpty { throw Failure.wouldEmpty }
 
-        if backup {
-            let current = old
+        if backup && exists && !old.isEmpty {
             let bak = URL(fileURLWithPath: path + ".bak")
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: bak.path, isDirectory: &isDir) {
                 // .bak 被同名目录占着 → 没有可用的备份，宁可中止也不做无备份覆盖
                 if isDir.boolValue { throw Failure.backupFailed }
             } else {
-                try current.write(to: bak, options: .atomic)     // 失败就抛，不再 try?
+                try old.write(to: bak, options: .atomic)     // 失败就抛，不再 try?
             }
             let prev = URL(fileURLWithPath: path + ".bak.prev")
-            try current.write(to: prev, options: .atomic)
+            var prevIsDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: prev.path, isDirectory: &prevIsDir) {
+                // 每次写回都会覆盖 .bak.prev；它是目录时直接中止，绝不 rm -rf 用户的东西
+                if prevIsDir.boolValue { throw Failure.backupFailed }
+            }
+            try old.write(to: prev, options: .atomic)
         }
         try data.write(to: url, options: .atomic)
         return data
@@ -81,10 +93,23 @@ enum FileWriter {
                           .replacingOccurrences(of: "\n", with: "\r\n")
             }
         }
-        guard let data = out.data(using: enc, allowLossyConversion: false) else {
+        guard var data = out.data(using: enc, allowLossyConversion: false) else {
             throw Failure.encodeFailed(encoding)
         }
+        // P0-4：BOM 是编码语义的一部分。`.utf16LittleEndian` / `.utf8` 都不写 BOM，
+        // 以前第一次保存就把文件开头的 FF FE 抹掉，再打开被当成 GBK，正文变 NUL 乱码。
+        if let bom = bomPrefix(encoding) { data = bom + data }
         return try writeAll(path: path, data: data, backup: backup)
+    }
+
+    /// 该编码是否要求文件开头带 BOM（前端的显示名里带「(BOM)」时）
+    static func bomPrefix(_ name: String) -> Data? {
+        let n = name.lowercased()
+        guard n.contains("bom") else { return nil }
+        if n.contains("utf-16be") || n.contains("utf16be") { return Data([0xFE, 0xFF]) }
+        if n.contains("utf-16") || n.contains("utf16") { return Data([0xFF, 0xFE]) }
+        if n.contains("utf-8") || n.contains("utf8") { return Data([0xEF, 0xBB, 0xBF]) }
+        return nil
     }
 
     /// 编码名 → String.Encoding。**认不出来就返回 nil**，由调用方报错；
@@ -108,7 +133,11 @@ enum FileWriter {
             return .utf16LittleEndian
         case let x where x.contains("utf-8") || x.contains("utf8"):
             return .utf8
-        case let x where x.contains("1252") || x.contains("latin") || x.contains("iso-8859-1"):
+        // B11：cp1252 里的 ’ “ ” – — 这些字形在 isoLatin1 里不存在，
+        // 用 isoLatin1 编码必然 allowLossyConversion:false 失败 → cp1252 文件永远存不了。
+        case let x where x.contains("1252") || x.contains("cp1252") || x.contains("windows-1252"):
+            return .windowsCP1252
+        case let x where x.contains("latin") || x.contains("iso-8859-1") || x.contains("88591"):
             return .isoLatin1
         default:
             return nil

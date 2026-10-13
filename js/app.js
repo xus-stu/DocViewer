@@ -202,14 +202,58 @@ window.DV = window.DV || {};
     if (s.indexOf('GB') >= 0 || s.indexOf('936') >= 0) return 'gb18030';
     if (s.indexOf('BIG5') >= 0 || s.indexOf('950') >= 0) return 'big5';
     if (s.indexOf('SHIFT') >= 0 || s.indexOf('932') >= 0) return 'shift_jis';
-    if (s.indexOf('UTF-16') >= 0) return s.indexOf('BE') >= 0 ? 'utf-16be' : 'utf-16le';
-    if (s.indexOf('UTF-8') >= 0) return 'utf-8';
+    // BOM 是编码的一部分：显示名里的「(BOM)」必须一路传到原生，
+    // 否则 UTF-16 文件第一次保存就把开头的 FF FE 丢掉，再打开就是一坨 NUL。
+    const bom = s.indexOf('BOM') >= 0 ? '-bom' : '';
+    if (s.indexOf('UTF-16') >= 0) return (s.indexOf('BE') >= 0 ? 'utf-16be' : 'utf-16le') + bom;
+    if (s.indexOf('UTF-8') >= 0) return 'utf-8' + bom;
     if (s.indexOf('1252') >= 0 || s.indexOf('LATIN') >= 0) return 'windows-1252';
     return 'utf-8';
   }
 
   function gbkSupported() {
     try { new TextDecoder('gb18030'); return true; } catch (e) { return false; }
+  }
+
+  /** 原生回执里的规范化编码名 → 界面上显示的编码名（写回后状态栏不能显示 latin1） */
+  function displayEncName(n) {
+    switch (String(n || '').toLowerCase()) {
+      case 'gb18030': return 'GB18030/GBK';
+      case 'big5': return 'BIG5';
+      case 'shift_jis': return 'SHIFT_JIS';
+      case 'utf-8': return 'UTF-8';
+      case 'utf-8-bom': return 'UTF-8 (BOM)';
+      case 'utf-16le': return 'UTF-16LE';
+      case 'utf-16le-bom': return 'UTF-16LE (BOM)';
+      case 'utf-16be': return 'UTF-16BE';
+      case 'utf-16be-bom': return 'UTF-16BE (BOM)';
+      case 'windows-1252': return 'WINDOWS-1252';
+      case 'latin1': return 'LATIN1';
+      default: return n || '—';
+    }
+  }
+
+  /**
+   * P0-3：把当前列表里所有可写路径重新登记到原生侧。
+   * 会话恢复（restoreSession）出来的文件原生并不认识，不补这一步保存必被拒。
+   */
+  function registerNativePaths() {
+    const bridge = nativeBridge();
+    if (!bridge) return 0;
+    const paths = [];
+    state.files.forEach(f => {
+      if (f.merged) { (f.parts || []).forEach(p => { if (p && p.fullPath) paths.push(p.fullPath); }); return; }
+      if (f && f.fullPath && f.fullPath.charAt(0) === '/') paths.push(f.fullPath);
+    });
+    if (!paths.length) return 0;
+    try {
+      bridge.postMessage({ action: 'allowFiles', paths: Array.from(new Set(paths)) });
+      DV.Log.info('已重新登记 ' + paths.length + ' 个可写路径');
+      return paths.length;
+    } catch (e) {
+      DV.Log.warn('登记可写路径失败：' + ((e && e.message) || e));
+      return 0;
+    }
   }
 
   /* ================= 文件解析 ================= */
@@ -307,11 +351,14 @@ window.DV = window.DV || {};
       const item = fileRecords[idx];
       try {
         const buf = await item.file.arrayBuffer();
-        const hint = /\.rtf$/i.test(item.name) ? 'gbk' : '';
-        const dec = decodeBuffer(buf, hint);
+        // 不按扩展名强制 hint：以前 .rtf 一律当 GBK 解，UTF-8 的中文 RTF 会被
+        // 判成 GB18030，DOM 变「涓枃姝ｆ枃」，保存后 \uN 全乱。
+        // 统一走字节探测（UTF-8 严格解码优先，可疑时再退回 GBK）。
+        const dec = decodeBuffer(buf, '');
         item.text = dec.text;
         item.encoding = dec.encoding;
         item.bytes = buf.byteLength;
+        if (item.kind === 'rtf') item.rawBytes = new Uint8Array(buf);   // P0-6：前言按原始字节写回
         item.big = buf.byteLength > BIG_BYTES;
         item.lines = item.big ? 0 : countLines(dec.text);      // 大文件不做全文统计
         item.chars = dec.text.length;
@@ -750,6 +797,10 @@ window.DV = window.DV || {};
     if (dirty && canEdit() && !(opts && opts.keepScroll === 'noflush')) {
       try { saveEdit(); } catch (e) { /* 忽略 */ }
     }
+    // P0-1：写回用的容器类型必须在**这次重绘之前**定格。
+    // 以前 saveEdit 临时读 state.raw，于是「渲染视图里改完 → 点源码按钮」
+    // 会先用 DOM 里渲染后的纯文本把 .rtf 覆盖掉，整份文件变成一段散文。
+    const plainNow = !!(state.raw || item.kind === 'txt' || item.kind === 'code');
     const k = kindBadge(item);
     // 重绘前的真实位置：写回源文件后的重绘要靠它原地不动
     const liveScrollTop = els.docScroll.scrollTop;
@@ -796,6 +847,8 @@ window.DV = window.DV || {};
       if (!state.wrap) doc.classList.add('nowrap');
       doc.innerHTML = item.html;
     }
+    paintedFor = item.id;                  // 这块 DOM 是怎么渲染出来的，写回时就按它走
+    paintedPlain = plainNow;
     // 字号
 
     const t1 = performance.now();
@@ -1184,6 +1237,8 @@ window.DV = window.DV || {};
   let pendingWrite = null;               // 这次写回的内容快照（回包只认它）
   let saveTimeoutTimer = 0;              // 写回确认超时
   let saveTimer = 0, dirty = false, wantFocus = false;
+  // 当前 DOM 是用哪种容器渲染出来的（P0-1：写回必须按它，而不是按「此刻」的 state.raw）
+  let paintedFor = null, paintedPlain = false;
 
   /** 手动保存（工具栏「保存」/ ⌘S）：只读或没有改动时给出提示，不写文件 */
   function manualSave() {
@@ -1248,29 +1303,52 @@ window.DV = window.DV || {};
   /** RTF 里有没有「解析时被跳过、写回时会被删掉」的内容 */
   function hasUnmodeledRtf(item) {
     const src = String((item && (item.rawSrc || item.text)) || '');
-    return /\\pict\b|\\shppict\b|\\nonshppict\b|\\object\b|\\shp\b|\\header\b|\\footer\b|\\footnote\b|\\annotation\b/.test(src);
+    // P0-7：按目的地逐个核对，\header 匹配不到 \headerl/\headerr 这类后缀写法
+    try {
+      if (DV.rtf.unmodeledDestinations) return DV.rtf.unmodeledDestinations(src);
+    } catch (e) { /* 退回旧正则 */ }
+    return /\\pict\b|\\shppict\b|\\object\b/.test(src) ? ['pict'] : [];
+  }
+
+  /**
+   * 写回时该按「纯文本」还是「富文本」处理。
+   * 以渲染这块 DOM 时的模式为准（paintedPlain），只有对不上号时才现算。
+   */
+  function writeAsPlain(item) {
+    if (paintedFor === item.id) return paintedPlain;
+    return isPlainView(item);
   }
 
   function saveEdit() {
     const tgt = editTarget();
     if (!tgt) return false;
     const item = tgt.item;
+    const plain = writeAsPlain(item);      // P0-1：不看此刻的 state.raw
     clearTimeout(saveTimer);
     setSaveState('saving');        // dirty 等原生回包确认后再清（A#8）
 
     // A#3：含图片 / 页眉页脚 / 脚注 / 域这类没建模的内容时，写回会把它们整段删掉
-    if (item.kind === 'rtf' && !tgt.plain && hasUnmodeledRtf(item)) {
-      DV.toast(DV.t('这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存'), 'err', 4600);
-      DV.Log.warn('已阻止写回（含未建模内容）：' + item.name);
-      setSaveState('unsaved');
-      dirty = true;
-      return false;
+    if (item.kind === 'rtf' && !plain) {
+      const lost = hasUnmodeledRtf(item);
+      if (lost.length) {
+        DV.toast(DV.t('这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容（{x}），写回会丢掉它们，已阻止保存',
+          { x: lost.join('、') }), 'err', 4600);
+        DV.Log.warn('已阻止写回（含未建模内容 ' + lost.join('、') + '）：' + item.name);
+        setSaveState('unsaved');
+        dirty = true;
+        return false;
+      }
     }
 
     let payload;
-    if (item.kind === 'rtf' && !tgt.plain) {
-      // 前言里有从原文件读出的原始字节（字体名等），必须按 latin1 原样写回
-      payload = { text: DV.rtf.rebuildSource(item.rawSrc || '', els.doc), encoding: 'latin1' };
+    if (item.kind === 'rtf' && !plain) {
+      // P0-6：前言按**原始字节**逐字节透传（一个字符 = 一个字节，原生按 latin1 写回）。
+      // 以前前言走的是解码后的文本，字体名里的 GBK 字节会变成 CJK 字符，
+      // latin1 编码直接失败 —— 前言含高位字节的 RTF 永远存不了。
+      payload = {
+        text: DV.rtf.rebuildSource(item.rawSrc || item.text || '', els.doc, item.rawBytes),
+        encoding: 'latin1',
+      };
     } else {
       payload = { text: domToText(els.doc), encoding: encName(item.encoding) };
     }
@@ -1317,18 +1395,20 @@ window.DV = window.DV || {};
     pendingWrite = null;
     if (item) {
       /* 只用写回时的快照更新数据，绝不从 els.doc 回读：
-         回包是异步的，那时 els.doc 可能已经是另一个文件的正文（A#2）。 */
+         回包是异步的，那时 els.doc 可能是另一个文件的正文（A#2）。 */
+      const bytePassthrough = snap && snap.encoding === 'latin1';   // RTF：编码没变，只是字节透传
       if (snap) {
         item.text = snap.text;
         if (item.kind === 'rtf' && !isPlainView(item)) {
           item.rawSrc = snap.text;
           renderFile(item);            // 重新解析成 item.html，但不落 DOM
         }
-        item.encoding = snap.encoding === 'latin1' ? item.encoding : snap.encoding;
+        if (!bytePassthrough) item.encoding = snap.encoding;
       }
       if (typeof res.bytes === 'number' && res.bytes > 0) item.bytes = res.bytes;   // A19：真实字节数
       else item.bytes = item.text.length;                                          // 没有回执时退化为字符数
-      if (res.encoding) item.encoding = res.encoding;                              // A19：写回后的实际编码
+      // P1-19：只有真的重新编码了才更新编码名；RTF 的 latin1 写回不代表文件变成 latin1
+      if (res.encoding && !bytePassthrough) item.encoding = displayEncName(res.encoding);
       item.lines = countLines(item.text);
       item.chars = item.text.length;
       syncRowClasses();
@@ -1445,6 +1525,9 @@ window.DV = window.DV || {};
     });
     state.wrap = data.wrap !== false;
     state.raw = !!data.raw;
+    // P0-3：会话恢复出来的文件在原生侧**没有登记过**，写回会被「没打开过这个文件」拒掉。
+    // 这里重新登记一次（只登记路径，不投递内容）。
+    registerNativePaths();
     refreshList();
     // A18：优先用 id（同名文件不会选错），没有 id 的旧会话再退回按名字找
     const tgt = (data.activeId && state.files.find(f => f.id === data.activeId))
@@ -1512,12 +1595,14 @@ window.__DV_NATIVE_FILES = function (paths) {
         const res = await fetchWithTimeout(item._fetchUrl, 4000);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const buf = await res.arrayBuffer();
-        const dec = decodeBuffer(buf, /\.rtf$/i.test(item.name) ? 'gbk' : '');
+        const dec = decodeBuffer(buf, '');
         item.text = dec.text;
         item.encoding = dec.encoding;
         item.bytes = buf.byteLength;
+        if (item.kind === 'rtf') item.rawBytes = new Uint8Array(buf);   // P0-6：前言按原始字节写回
         item.size = buf.byteLength;
-        item.lines = countLines(dec.text);
+        item.big = buf.byteLength > BIG_BYTES;
+        item.lines = item.big ? 0 : countLines(dec.text);
         item.chars = dec.text.length;
         renderFile(item);
         state.files.push(item);
@@ -2139,6 +2224,7 @@ window.__DV_NATIVE_FILES = function (paths) {
     autosaveMs: AUTOSAVE_MS, manualSave,
     diag: () => { const it = active(); return it ? DV.Debug.emitReport(it) : ''; },
     seedWelcome, resetToFirstRun, applyEditMode, saveEdit, canEdit, isPlainView, domToText,
-    renderFile, restoreSession, saveSession, renderMerged,
+    renderFile, restoreSession, saveSession, renderMerged, registerNativePaths,
+    hasUnmodeledRtf, writeAsPlain,
     version: APP_VERSION, decodeBuffer, makeHexDecoder, detectRtfCodepage };
 })();

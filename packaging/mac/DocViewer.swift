@@ -372,6 +372,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.windowsMenu = nil
     }
 
+    // MARK: 重新登记可写路径（会话恢复用）
+    /// body: { paths: [String] }
+    /// 上次运行留下的文件列表在原生侧没有登记，恢复会话后保存会被「没打开过」拒掉。
+    /// 这里只放宽读/写白名单，不投递内容。
+    private func handleAllowFiles(_ body: [String: Any]) {
+        guard let paths = body["paths"] as? [String] else { return }
+        var n = 0
+        for p in paths where !p.isEmpty {
+            OpenedFiles.shared.allow(p)
+            n += 1
+        }
+        NSLog("DocViewer: 重新登记 %d 个路径", n)
+    }
+
     // MARK: 写回源文件（整文件替换）
     /// body: { path, text, encoding }
     /// text 是新的完整文件内容（RTF 已由前端按原 preamble + 重新序列化的正文拼好）。
@@ -518,6 +532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         switch action {
         case "pickFiles": openFilesPanel()
         case "pickFolder": openFolderPanel()
+        case "allowFiles": handleAllowFiles(body)
         case "writeFile": handleWriteFile(body)
         default: break
         }

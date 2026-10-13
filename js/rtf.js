@@ -50,12 +50,43 @@ DV.rtf = (function () {
     'info', 'generator', 'title', 'author', 'company', 'creatim', 'revtim', 'printim',
     'buptim', 'doccomm', 'operator', 'category', 'keywords', 'subject', 'comment',
     'manager', 'hlinkbase', 'version', 'vern', 'edmins', 'nofpages', 'nofwords',
-    'nofchars', 'id', 'pict', 'object', 'shppict', 'nonshppict', 'shp', 'shpinst',
-    'header', 'footer', 'headerl', 'headerr', 'footerl', 'footerr', 'footnote',
-    'annotation', 'field', 'fldinst', 'datafield', 'listtable', 'listoverridetable',
-    'rsidtbl', 'xmlnstbl', 'themedata', 'colorschememapping', 'latentstyles',
-    'pgptbl', 'revtbl', 'upr', 'datastore', 'filetbl', 'mmath',
+    'nofchars', 'id', 'nofcharsw', 'pict', 'object', 'shppict', 'nonshppict', 'shp',
+    'shpinst', 'shprslt', 'shptxt', 'dobject',
+    'header', 'footer', 'headerl', 'headerr', 'headerf', 'footerl', 'footerr', 'footerf',
+    'footnote', 'annotation', 'field', 'fldinst', 'datafield', 'listtable',
+    'listoverridetable', 'rsidtbl', 'xmlnstbl', 'themedata', 'colorschememapping',
+    'latentstyles', 'pgptbl', 'revtbl', 'upr', 'datastore', 'filetbl', 'mmath',
   ]);
+
+  /**
+   * 解析时会被整体跳过、写回时又不会重新生成的「有内容」目的地。
+   * 写回前必须拿这张表去原文里核对 —— 光看解析器跳过了什么不够，
+   * 因为 \header 匹配不到 \headerl/\headerr 这类带后缀的写法。
+   */
+  const LOSSY_DEST = new Set([
+    'pict', 'shppict', 'nonshppict', 'shp', 'shpinst', 'shprslt', 'shptxt',
+    'dobject', 'object', 'mmath', 'header', 'headerl', 'headerr', 'headerf',
+    'footer', 'footerl', 'footerr', 'footerf', 'footnote', 'annotation',
+    'field', 'fldinst', 'datafield', 'listtable', 'listoverridetable',
+    'themedata', 'colorschememapping', 'latentstyles', 'rsidtbl', 'xmlnstbl',
+    'datastore', 'filetbl', 'upr', 'pgptbl', 'revtbl',
+  ]);
+
+  /**
+   * 原文里出现了哪些「写回会丢内容」的目的地。
+   * 按控制字逐个扫描（`{\*\pict …}` 里的 \pict 也能扫到），返回去重后的名字。
+   */
+  function unmodeledDestinations(src) {
+    const s = String(src || '');
+    const hit = new Set();
+    const re = /\\([a-zA-Z]+)/g;
+    let m;
+    while ((m = re.exec(s))) {
+      const w = m[1].toLowerCase();
+      if (LOSSY_DEST.has(w)) hit.add(w);
+    }
+    return Array.from(hit);
+  }
 
   function genericFamily(name) {
     for (const [re, g] of FONT_GENERIC) if (re.test(name)) return g;
@@ -379,6 +410,11 @@ DV.rtf = (function () {
     }
 
     const BULLET = '\u0002';
+    /** 各种项目符号字符（解析时统一成 •） */
+    const BULLET_CHARS = '\u2022\u00b7\u25cf\u25aa\u25a0\u2023\u2043\u2219\\-\\*\u25cb\u25a1';
+    /** \u0002 标记（连同紧邻的项目符号字符/空白）→ 一个「• 」 */
+    const BULLET_RUN = new RegExp('[' + BULLET + BULLET_CHARS + '\\s\\t]*' + BULLET +
+      '[' + BULLET + BULLET_CHARS + '\\s\\t]*', 'g');
 
     function isListBulletText(t) {
       return /^[\u0002]?\s*[\u2022\u00b7\u25cf\u25aa\u25a0\u2023\u2043\u2219\-\*\u25cb\u25a1]\s*[\t ]?$/.test(t);
@@ -414,7 +450,9 @@ DV.rtf = (function () {
         openTag('li', 'rtf-li', paragraphStyle());
         s.liOpen = true;
         spanCache.clear();
-        t = t.replace(new RegExp(BULLET + '\\s*', 'g'), '\u2022 ');
+        // \pntext 已经写过标记，组里那个真正的项目符号字符（•、·、\'B7…）
+        // 也要一起吃掉：以前只替换标记、留着字符，于是保存后变成「• • 第一项」。
+        t = t.replace(BULLET_RUN, '\u2022 ');
       }
       if (!t) return;
       if (!s.inList) ensureBlock();
@@ -914,6 +952,16 @@ DV.rtf = (function () {
     flush();
     closeTo(0);
 
+    // 「结尾多出来的空段落」：\par 会先关掉上一段、再开一段新的，最后那个 \par
+    // 留下一段永远填不满的空 <p>；写回时 htmlToRtf 又会为每个块补一个 \par，
+    // 于是每保存一次就多一个空行（\par 5→6→7→8）。
+    // 收尾时把没有任何内容的末段整个删掉，段落数才和源文件对得上。
+    if (paraEmpty && out.length >= 2 &&
+        out[out.length - 1] === '</p>' && /^<p\b/.test(out[out.length - 2])) {
+      out.length -= 2;
+      if (stats.paragraphs > 0) stats.paragraphs--;
+    }
+
     const html = out.join('');
     DV.__dbg.push('loop done: paragraphs=' + stats.paragraphs + ' softBreaks=' + stats.softBreaks + ' softPara=' + stats.softParagraphs + ' hard=' + stats.hardParagraphs);
     const plain = extractText(str, decodeHex, { softWrap });
@@ -1148,35 +1196,159 @@ DV.rtf = (function () {
   }
 
   /**
+   * 文档级控制字（无输出、且不改变字符/段落状态）。
+   * 只认这些：其余控制字一律算正文，写回时由 DOM 重新序列化。
+   * 之前是「见到 \ 就一直吃」，把正文开头的 \uNNNN / \bullet 也当成前言吃掉了，
+   * 于是那段内容既留在前言里、又被重新序列化一遍 —— 保存一次就多一遍。
+   */
+  const HEADER_WORDS = new Set([
+    'rtf', 'ansi', 'mac', 'pc', 'pca', 'ansicpg', 'deff', 'deflang', 'deflangfe',
+    'adeflang', 'adeff', 'fet', 'fromtext', 'viewkind', 'viewscale', 'viewzk',
+    'uc', 'deftab', 'nouicompat', 'nofpages', 'nofwords', 'nofchars', 'nofcharsw',
+    'lnbrkrule', 'widowctrl', 'hyphauto', 'formshade', 'horzdoc', 'vertdoc',
+    'jexpand', 'viewbksp', 'nolnhtadjtbl', 'generator', 'splytwnine', 'ftnsep',
+    'ftnsepc', 'ftncn', 'aendnotes', 'aenddoc', 'ltrsect', 'rtlpar', 'ltrpar',
+    'ltrch', 'rtlch', 'dbch', 'loch', 'hich', 'cchs', 'ansicpg', 'nofchars',
+    'oldcprops', 'oldpprops', 'oldsprops', 'oldtprops', 'clmgf', 'clmrg',
+  ]);
+
+  const WS = /[ \t\r\n\f]/;
+
+  /** 从 i 开始读一个控制字，返回 {word, end}。
+      只把「数字后面紧跟的那个空格」当定界符吃掉 —— 后面如果是反斜杠，
+      那是下一个控制字，绝不能一起吞掉。 */
+  function readControlWord(s, i) {
+    let j = i + 1;
+    let word = '';
+    while (j < s.length && /[a-zA-Z]/.test(s[j])) word += s[j++];
+    if (s[j] === '-') j++;
+    while (j < s.length && /[0-9]/.test(s[j])) j++;
+    if (s[j] === ' ') j++;
+    return { word: word, end: j };
+  }
+
+  /** 跳过 { … } 整个组（s[i] 必须是 '{'），返回闭合花括号后的下标 */
+  function skipGroup(s, i) {
+    let depth = 0;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === '\\') { i += 2; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; i++; if (depth === 0) return i; continue; }
+      i++;
+    }
+    return i;
+  }
+
+  /**
+   * 正文在源字符串里的起始下标（与 splitSource 的切分点一致）。
+   * 单独抽出来是为了能在**原始字节**上做同样的切分：
+   * 前言里的字体名可能是 GBK 字节，只有拿到原始字节才能原样写回。
+   */
+  function bodyStartIndex(s) {
+    s = String(s || '');
+    let i = 0;
+    if (s[i] === '{') i++;
+    // 1) 文档头：只吃 HEADER_WORDS 里的控制字
+    for (;;) {
+      const save = i;
+      while (i < s.length && WS.test(s[i])) i++;
+      if (s[i] !== '\\') { i = save; break; }
+      const cw = readControlWord(s, i);
+      if (!cw.word || !HEADER_WORDS.has(cw.word)) { i = save; break; }
+      i = cw.end;
+    }
+    // 2) 依次跳过字体表 / 颜色表 / 样式表 / 星号组
+    for (;;) {
+      const save = i;
+      while (i < s.length && WS.test(s[i])) i++;
+      if (s[i] !== '{') { i = save; break; }
+      i = skipGroup(s, i);
+    }
+    // 3) 正文从 \pard 开始；没有 \pard 就从上面停下的地方开始
+    const at = s.indexOf('\\pard', i);
+    return at >= 0 ? at : i;
+  }
+
+  /** 原始字节里的正文起始位置（只看 ASCII，不受文本解码影响） */
+  function bodyStartBytes(bytes) {
+    const n = bytes.length;
+    let i = 0;
+    const at = k => String.fromCharCode(bytes[k]);
+    const isWs = k => { const c = bytes[k]; return c === 0x20 || c === 0x09 || c === 0x0d || c === 0x0a || c === 0x0c; };
+    const isAlpha = k => { const c = bytes[k]; return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); };
+    const isDigit = k => bytes[k] >= 48 && bytes[k] <= 57;
+    function readWord(k) {                    // k 指向 '\'
+      let j = k + 1, word = '';
+      while (j < n && isAlpha(j)) word += at(j++);
+      if (j < n && bytes[j] === 0x2d) j++;
+      while (j < n && isDigit(j)) j++;
+      if (j < n && bytes[j] === 0x20) j++;
+      return { word: word, end: j };
+    }
+    function skipGrp(k) {
+      let depth = 0;
+      while (k < n) {
+        const c = bytes[k];
+        if (c === 0x5c) { k += 2; continue; }
+        if (c === 0x7b) depth++;
+        else if (c === 0x7d) { depth--; k++; if (depth === 0) return k; continue; }
+        k++;
+      }
+      return k;
+    }
+    if (bytes[0] === 0x7b) i = 1;
+    for (;;) {
+      const save = i;
+      while (i < n && isWs(i)) i++;
+      if (i >= n || bytes[i] !== 0x5c) { i = save; break; }
+      const cw = readWord(i);
+      if (!cw.word || !HEADER_WORDS.has(cw.word)) { i = save; break; }
+      i = cw.end;
+    }
+    for (;;) {
+      const save = i;
+      while (i < n && isWs(i)) i++;
+      if (i >= n || bytes[i] !== 0x7b) { i = save; break; }
+      i = skipGrp(i);
+    }
+    for (let k = i; k + 4 < n; k++) {
+      if (bytes[k] === 0x5c && bytes[k + 1] === 0x70 && bytes[k + 2] === 0x61 &&
+          bytes[k + 3] === 0x72 && bytes[k + 4] === 0x64) return k;
+    }
+    return i;
+  }
+
+  /** 原始字节 → 逐字节对应的字符串（写回时按 latin1 编码即可还原原字节） */
+  function latin1OfBytes(bytes, from, to) {
+    let out = '';
+    const CH = 8192;
+    for (let k = from; k < to; k += CH) {
+      out += String.fromCharCode.apply(null, bytes.subarray(k, Math.min(to, k + CH)));
+    }
+    return out;
+  }
+
+  /**
+   * 前言（原样保留的部分）。
+   * 有原始字节时按字节切分并返回「一个字符 = 一个字节」的字符串，
+   * 字体名是 GBK 字节也不会在写回时被重编码弄坏。
+   */
+  function preambleText(src, rawBytes) {
+    if (rawBytes && rawBytes.length) {
+      const end = bodyStartBytes(rawBytes);
+      return latin1OfBytes(rawBytes, 0, end);
+    }
+    return String(src || '').slice(0, bodyStartIndex(src));
+  }
+
+  /**
    * 把源文件切成「前言（字体表/颜色表/样式表/文档级控制字）」和「正文」。
    * 写回时前言原样保留，只替换正文，这样文件自带的字体与样式不会丢。
    */
   function splitSource(src) {
     const s = String(src || '');
-    let i = 0;
-    // 1) 跳过 {\rtf1 ... 的控制字
-    if (s[i] === '{') { i++; }
-    while (i < s.length && s[i] === '\\') {                       // 
-
-      while (i < s.length && s[i] !== ' ' && s[i] !== '\n' && s[i] !== '\r' && s[i] !== '{' && s[i] !== '}') i++;
-      while (i < s.length && (s[i] === ' ' || s[i] === '\n' || s[i] === '\r')) i++;
-    }
-    // 2) 依次跳过字体表 / 颜色表 / 样式表 / 星号组
-    for (;;) {
-      const save = i;
-      while (i < s.length && /\s/.test(s[i])) i++;
-      if (s[i] !== '{') { i = save; break; }
-      let depth = 0;
-      while (i < s.length) {
-        if (s[i] === '\\') { i += 2; continue; }                  // 转义
-        if (s[i] === '{') depth++;
-        else if (s[i] === '}') { depth--; i++; if (depth === 0) break; continue; }
-        i++;
-      }
-    }
-    // 3) 文档级控制字（\viewkind \uc1 \deftab …）也归到前言，直到 \pard 或正文首个 \fs/\f
-    const bodyAt = s.indexOf('\\pard', i);
-    const cut = bodyAt >= 0 ? bodyAt : i;
+    const cut = bodyStartIndex(s);
     let body = s.slice(cut);
     // 去掉最外层结尾的 }
     const close = body.lastIndexOf('}');
@@ -1250,8 +1422,7 @@ DV.rtf = (function () {
   }
 
   /** 组装整份新文件：前言 + 新正文 + } */
-  function rebuildSource(src, htmlRoot) {
-    const sp = splitSource(src);
+  function rebuildSource(src, htmlRoot, rawBytes) {
     // 真实 DOM 里 #doc 的直接子节点是最外层 <div class="rtf-body">，段落语义在里面。
     // 不剥掉这层壳，htmlToRtf 会把整篇当成「一个块」，所有段落并成一段（主路径上的数据破坏）。
     let root = htmlRoot;
@@ -1272,11 +1443,15 @@ DV.rtf = (function () {
       }
       if (wrap) root = wrap;
     }
+    // 注意：前言必须走 preambleText —— 有原始字节时它返回「一个字符 = 一个字节」的
+    // 字符串，原生按 latin1 写回就是逐字节还原，GBK 字体名不会再触发编码失败。
+    const preamble = preambleText(src, rawBytes);
     const newBody = htmlToRtf(root, { source: src });
     // htmlToRtf 末尾自带 }，这里只拼 前言 + 新正文
-    return sp.preamble + newBody;
+    return preamble + newBody;
   }
 
   return { parse, extractText, escapeText, dominantFs, defaultFontIndex,
-    splitSource, htmlToRtf, rebuildSource, detectUc, CHARSET_PAGES: FCHARSET };
+    splitSource, bodyStartIndex, bodyStartBytes, preambleText, htmlToRtf, rebuildSource,
+    detectUc, unmodeledDestinations, DEST_SKIP, LOSSY_DEST, CHARSET_PAGES: FCHARSET };
 })();

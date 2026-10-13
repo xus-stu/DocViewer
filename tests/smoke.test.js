@@ -57,6 +57,10 @@ class Node2 {
   set className(v) { this.attrs.class = v; this.classList.set = new Set(String(v).split(/\s+/).filter(Boolean)); }
   get firstChild() { return this.children[0] || null; }
   get lastChild() { return this.children[this.children.length - 1] || null; }
+  // 真实 DOM 的 childNodes 是 NodeList。以前迷你 DOM 只有 children，
+  // htmlToRtf(node.childNodes || []) 就永远拿到空数组 —— 所有「写回」测试
+  // 其实都在写一个空正文，P0 的每一条都能从测试里溜过去。
+  get childNodes() { return this.children; }
   get checked() { return !!this._checked; }
   set checked(v) { this._checked = v; }
   get value() { return this._value == null ? '' : this._value; }
@@ -86,7 +90,10 @@ class Node2 {
   }
   get tagName() { return this.tag; }
   get nodeName() { return this.tag; }
-  get nodeType() { return this.tag === '#text' ? 3 : 1; }
+  // 注意：Node2 的 tag 会被 toUpperCase()，文本节点的 tag 是 '#TEXT' 而不是 '#text'。
+  // 以前这里比的是小写，于是**所有文本节点的 nodeType 都是 1** ——
+  // domToText / inlineToRtf 这类「nodeType===3」的分支从来没被真正执行过。
+  get nodeType() { return this.tag === '#TEXT' ? 3 : 1; }
   appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
   removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) { this.children.splice(i, 1); c.parentNode = null; } return c; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
@@ -126,7 +133,7 @@ class Node2 {
   normalize() { }
   click() { this.dispatch('click', {}); }
   get textContent() {
-    if (this.tag === '#text') return this.nodeValue || '';
+    if (this.tag === '#TEXT') return this.nodeValue || '';
     return this.children.map(c => c.textContent).join('');
   }
   set textContent(v) { this.children = []; if (v !== '') this.appendChild(new TextNode(String(v))); }
@@ -181,13 +188,13 @@ function collect(root, tag) {
   const out = [];
   tag = tag.toUpperCase();
   (function walk(n) {
-    if (n.tag === tag || (tag === '*' && n.tag !== '#text')) out.push(n);
+    if (n.tag === tag || (tag === '*' && n.tag !== '#TEXT')) out.push(n);
     n.children.forEach(walk);
   })(root);
   return out;
 }
 function matchSimple(el, sel) {
-  if (el.tag === '#text') return false;
+  if (el.tag === '#TEXT') return false;
   return sel.split(/(?=[.#\[])/).every(part => {
     if (part.startsWith('#')) return el.id === part.slice(1);
     if (part.startsWith('.')) return el.classList.contains(part.slice(1));
@@ -220,7 +227,7 @@ function querySelectorAll(root, sel) { return collect(root, '*').filter(n => mat
 function querySelector(root, sel) { return querySelectorAll(root, sel)[0] || null; }
 
 function serialize(n) {
-  if (n.tag === '#text') return n.nodeValue;
+  if (n.tag === '#TEXT') return n.nodeValue;
   const attrs = Object.entries(n.attrs).map(([k, v]) => ` ${k}="${v}"`).join('');
   if (n.tag === 'BR' || n.tag === 'HR' || n.tag === 'IMG' || n.tag === 'INPUT') return `<${n.tag.toLowerCase()}${attrs}>`;
   return `<${n.tag.toLowerCase()}${attrs}>` + n.children.map(serialize).join('') + `</${n.tag.toLowerCase()}>`;
@@ -315,10 +322,14 @@ const documentObj = {
   getElementsByTagName: t => collect(documentEl, t),
   addEventListener(type, fn) { (listeners['doc:' + type] = listeners['doc:' + type] || []).push(fn); },
   createTreeWalker(root, what) {
-    const nodes = collect(root, '*').filter(n => n.tag === '#text').concat(
-      (function allText(n, acc) { n.children.forEach(c => { if (c.tag === '#text') acc.push(c); else allText(c, acc); }); return acc; })(root, []));
+    const nodes = collect(root, '*').filter(n => n.tag === '#TEXT').concat(
+      (function allText(n, acc) { n.children.forEach(c => { if (c.tag === '#TEXT') acc.push(c); else allText(c, acc); }); return acc; })(root, []));
     let idx = 0;
-    return { nextNode: () => (idx < nodes.length ? nodes[idx++] : null) };
+    // 真实 TreeWalker 有 currentNode；以前没暴露，i18n 的
+    // `nodes.push(walker.currentNode)` 会推入一堆 undefined。
+    const w = { currentNode: null };
+    w.nextNode = () => (idx < nodes.length ? (w.currentNode = nodes[idx++]) : null);
+    return w;
   },
 };
 
@@ -654,7 +665,12 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     const rr = App.state.files.find(f => f.name === 'gbk-rtf-回归.rtf');
     ok(!!rr, 'GBK RTF 已导入');
     if (rr) {
-      ok(rr.encoding === 'GB18030/GBK', 'RTF 文件按 GBK 读出，实际 ' + rr.encoding);
+      // 这份 RTF 的字节全是 ASCII（中文都在 \'hh 转义里），文件级编码本来就该是 UTF-8；
+      // 真正的中文由 \ansicpg936 驱动解码器还原。以前对 .rtf 强制 hint='gbk'，
+      // 会把 UTF-8 的中文 RTF 判成 GB18030 —— 见下面「UTF-8 中文 RTF」那一段。
+      ok(rr.encoding === 'UTF-8' || rr.encoding === 'GB18030/GBK',
+         '全 ASCII 的 RTF 按字节探测读出，实际 ' + rr.encoding);
+      ok(!/[\u4e00-\u9fff]/.test(rr.text), '文件级文本里不含汉字（汉字都在十六进制转义里）');
       const expected = new TextDecoder('gb18030').decode(Uint8Array.from(GBK_TEXT_BYTES));
       ok(expected === GBK_RTF_TEXT, '参照解码正确：' + JSON.stringify(expected));
       // 关键：解码器必须一次拿到连续字节，而不是逐字节
@@ -719,7 +735,10 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       const html = rr.html || '';
       ok((html.match(/<br>/g) || []).length >= 1, '裸换行渲染成 <br>（' + (html.match(/<br>/g) || []).length + ' 个）',
          html.slice(0, 160));
-      ok((html.match(/<p /g) || []).length >= 2, '空行渲染成新段落（' + (html.match(/<p /g) || []).length + ' 个）');
+      // P0-8：源文件只有一个 \par，就只该有一个真段落；
+      // 以前 \par 会先关上一段再开一段空的，末尾永远多一个空 <p>，保存一次多一个空行。
+      const pCount = (html.match(/<p /g) || []).length;
+      ok(pCount === 1, '只有一个 \\par 就只有一个段落（实际 ' + pCount + ' 个）');
       const plain = html.replace(/<[^>]*>/g, '');
       ok(plain.includes('A1') && plain.includes('A2') && plain.includes('B1'), '三段文字都在：' + JSON.stringify(plain.slice(0, 40)));
       // 关掉开关后不再产生软换行
@@ -985,6 +1004,173 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     ok(recA && Number(recA.scroll) === 260, '会话记录了阅读位置', recA ? 'scroll=' + recA.scroll : '缺少记录');
 
     App.closeFile(A.id); App.closeFile(B.id);
+  }
+
+  /* --- 场景 7c-10：P0 数据破坏回归（写回路径以前完全没有覆盖）--- */
+  {
+    const mkRtf = (name, bytes) => ({
+      id: 'p0-' + name, name: name, path: '', size: bytes.length,
+      kind: DV.kindOf(name),
+      file: { name: name, size: bytes.length, webkitRelativePath: '',
+              arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset || 0,
+                (bytes.byteOffset || 0) + bytes.byteLength) },
+      text: '', bytes: bytes.length,
+    });
+    const utf8 = s => new TextEncoder().encode(s);
+    const lat1 = s => new Uint8Array(Buffer.from(s, 'latin1'));
+    const state_clear = () => { App.state.files.length = 0; App.state.activeId = null; };
+
+    // ---- P0-1：渲染视图里改完，切到「源码」再保存，不能把散文写进 .rtf ----
+    {
+      const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil A;}}'
+        + '\\pard\\f0\\fs24 第一段\\par 第二段\\par}';
+      await App.ingest([mkRtf('视图切换.rtf', lat1(src))], { showProgress: false });
+      const it = App.state.files.find(f => f.name === '视图切换.rtf');
+      ok(!!it, 'P0-1：测试用 RTF 已导入');
+      it.fullPath = '/tmp/docviewer-p0-1.rtf';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id);
+      App.applyEditMode();
+      ok(App.state.raw === false, 'P0-1：当前是渲染视图');
+      App.els.doc.innerHTML = '<div class="rtf-body"><p>改过的第一段</p></div>';
+      App.els.doc.dispatch('input', {});
+      documentObj.getElementById('btnRaw').dispatch('click', {});   // 切成源码视图
+      const wrote = sent.filter(m => m.action === 'writeFile');
+      ok(wrote.length === 1, 'P0-1：切视图前先把改动写回去', 'writes=' + wrote.length);
+      const payload = wrote[0] || {};
+      ok(payload.encoding === 'latin1', 'P0-1：RTF 按字节透传（latin1）写回，实际 ' + payload.encoding);
+      ok(/^\{\\rtf1/.test(payload.text || ''), 'P0-1：写回内容仍是 RTF 而不是渲染后的纯文本',
+         JSON.stringify(String(payload.text).slice(0, 80)));
+      ok(String(payload.text).indexOf('\\pard') >= 0, 'P0-1：正文由序列化器重新生成');
+      ok(String(payload.text).indexOf('\\u25913?') >= 0, 'P0-1：改动进了正文（「改」= \\u25913）',
+         JSON.stringify(String(payload.text)));
+      ok(App.state.raw === true, 'P0-1：视图确实切到了源码');
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+      App.state.raw = false;
+      App.closeFile(it.id);
+    }
+
+    // ---- P0-2：UTF-8 无 BOM 的中文 RTF 不能被强制当 GBK ----
+    {
+      const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil A;}}'
+        + '\\pard\\f0\\fs24 中文正文\\par}';
+      await App.ingest([mkRtf('utf8-rtf.rtf', utf8(src))], { showProgress: false });
+      const it = App.state.files.find(f => f.name === 'utf8-rtf.rtf');
+      ok(!!it, 'P0-2：UTF-8 RTF 已导入');
+      if (it) {
+        ok(it.encoding === 'UTF-8', 'P0-2：按字节探测判成 UTF-8，实际 ' + it.encoding);
+        ok(it.text.indexOf('中文正文') >= 0, 'P0-2：文件级文本没有乱码', JSON.stringify(it.text.slice(0, 60)));
+        ok(it.text.indexOf('涓枃') < 0, 'P0-2：没有出现「涓枃姝ｆ枃」式的 GBK 误解');
+        const html = it.html || '';
+        ok(html.indexOf('中文正文') >= 0, 'P0-2：渲染结果正确');
+        // 保存：UTF-8 进、UTF-8 出
+        it.fullPath = '/tmp/docviewer-p0-2.rtf';
+        const sent = [];
+        windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+        DV.Settings.set({ editMode: 'rw' });
+        App.select(it.id); App.applyEditMode();
+        App.els.doc.dispatch('input', {});
+        App.manualSave();
+        const w = sent.filter(m => m.action === 'writeFile')[0] || {};
+        ok(w.encoding === 'latin1' && /^\{\\rtf1/.test(w.text || ''),
+           'P0-2：仍然走 RTF 字节透传写回（不会被降级成纯文本）');
+        delete windowObj.webkit;
+        DV.Settings.set({ editMode: 'ro' });
+        App.closeFile(it.id);
+      }
+    }
+
+    // ---- P0-3：会话恢复后的文件必须重新向原生登记，否则保存必被拒 ----
+    {
+      // 这一段会把列表整个换掉，做完要原样还原，免得后面的场景没文件可用
+      const keepFiles = App.state.files.slice();
+      const keepActive = App.state.activeId;
+      const keepSession = localStorageData['docviewer.session'];
+      state_clear();
+      localStorageData['docviewer.session'] = JSON.stringify({
+        v: 1, files: [{ name: '恢复.rtf', path: '/tmp', fullPath: '/tmp/docviewer-restored.rtf',
+                        kind: 'rtf', text: '{\\rtf1\\ansi\\pard 正文\\par}', encoding: 'UTF-8', size: 24 }],
+        active: '恢复.rtf',
+      });
+      DV.Settings.set({ rememberSession: true });
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      const okRestore = App.restoreSession();
+      ok(okRestore === true, 'P0-3：会话已恢复');
+      const allow = sent.filter(m => m.action === 'allowFiles')[0];
+      ok(!!allow, 'P0-3：恢复后向原生重新登记了可写路径');
+      ok(allow && allow.paths && allow.paths.indexOf('/tmp/docviewer-restored.rtf') >= 0,
+         'P0-3：登记的就是恢复出来的那个路径', JSON.stringify(allow && allow.paths));
+      delete windowObj.webkit;
+      // 还原
+      state_clear();
+      keepFiles.forEach(f => App.state.files.push(f));
+      if (keepSession === undefined) delete localStorageData['docviewer.session'];
+      else localStorageData['docviewer.session'] = keepSession;
+      if (keepActive) App.select(keepActive);
+    }
+
+    // ---- P0-4：UTF-16LE(BOM) 的编码语义要一路传到原生 ----
+    {
+      const body = 'A1\nA2\n';
+      const u16 = Buffer.from('\uFEFF' + body, 'utf16le');
+      await App.ingest([mkRtf('bom16.txt', new Uint8Array(u16))], { showProgress: false });
+      const it = App.state.files.find(f => f.name === 'bom16.txt');
+      ok(!!it, 'P0-4：UTF-16 文件已导入');
+      if (it) {
+        ok(it.encoding === 'UTF-16LE (BOM)', 'P0-4：识别为 UTF-16LE (BOM)，实际 ' + it.encoding);
+        ok(it.text.indexOf('\uFEFF') < 0, 'P0-4：正文里不含 BOM 字符');
+        ok(it.text.indexOf('A1') >= 0, 'P0-4：正文解码正确');
+        it.fullPath = '/tmp/docviewer-p0-4.txt';
+        const sent = [];
+        windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+        DV.Settings.set({ editMode: 'rw' });
+        App.select(it.id); App.applyEditMode();
+        App.els.doc.dispatch('input', {});
+        App.manualSave();
+        const w = sent.filter(m => m.action === 'writeFile')[0] || {};
+        ok(w.encoding === 'utf-16le-bom', 'P0-4：编码名带上了 BOM，实际 ' + w.encoding);
+        delete windowObj.webkit;
+        DV.Settings.set({ editMode: 'ro' });
+        App.closeFile(it.id);
+      }
+    }
+
+    // ---- P0-6：前言含 GBK 字节时也要能存（前言按原始字节透传）----
+    {
+      const head = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil\\fcharset134 ';
+      const tail = ';}}\\pard\\f0\\fs24 正文\\par}';
+      const raw = Buffer.concat([
+        Buffer.from(head, 'latin1'), Buffer.from([0xCB, 0xCE, 0xCC, 0xE5]), Buffer.from(tail, 'latin1'),
+      ]);
+      await App.ingest([mkRtf('gbk-font.rtf', new Uint8Array(raw))], { showProgress: false });
+      const it = App.state.files.find(f => f.name === 'gbk-font.rtf');
+      ok(!!it, 'P0-6：GBK 字体名 RTF 已导入');
+      if (it) {
+        it.fullPath = '/tmp/docviewer-p0-6.rtf';
+        const sent = [];
+        windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+        DV.Settings.set({ editMode: 'rw' });
+        App.select(it.id); App.applyEditMode();
+        App.els.doc.dispatch('input', {});
+        ok(App.manualSave() === true, 'P0-6：能发起写回（以前会 encodeFailed("latin1")）');
+        const w = sent.filter(m => m.action === 'writeFile')[0] || {};
+        let allByte = true;
+        for (let i = 0; i < String(w.text || '').length; i++) {
+          if (String(w.text).charCodeAt(i) > 0xFF) { allByte = false; break; }
+        }
+        ok(allByte, 'P0-6：写回串全部落在 latin1 范围内（不会编码失败）');
+        const pre = String(w.text || '').slice(0, String(w.text || '').indexOf('\\pard'));
+        const wantPre = raw.toString('latin1').slice(0, pre.length);
+        ok(pre === wantPre, 'P0-6：前言与原始字节逐字节一致');
+        delete windowObj.webkit;
+        DV.Settings.set({ editMode: 'ro' });
+        App.closeFile(it.id);
+      }
+    }
   }
 
   /* --- 场景 7d：帧率采样（不受 rAF 限制）--- */

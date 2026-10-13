@@ -201,6 +201,122 @@ console.log('\n== RTF 渲染 ==');
   ok(/color:\s*rgb\(0,\s*0,\s*0\)/.test(r2.html || ''), '显式黑色仍输出');
 }
 
+/* ================== 写回往返（解析 → DOM → rebuildSource） ==================
+   这一组是补回来的：以前三套测试全绿，但写回路径（P0 里的每一条）根本没被覆盖。 */
+{
+  const decode936 = b => new TextDecoder('gb18030').decode(b);
+  const ent = s => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  /** 解析器产出的 HTML → htmlToRtf 能吃的节点树（只需 nodeType/tagName/childNodes/className） */
+  function nodes(html) {
+    const root = { nodeType: 1, tagName: '#root', childNodes: [], className: '',
+      getAttribute() { return ''; }, querySelector() { return null; } };
+    const stack = [root];
+    const re = /<(\/)?([a-zA-Z0-9]+)((?:\s+[^\s=>]+(?:="[^"]*")?)*)\s*\/?>|([^<]+)/g;
+    let m;
+    while ((m = re.exec(html))) {
+      const top = stack[stack.length - 1];
+      if (m[1]) {
+        const t = m[2].toUpperCase();
+        for (let k = stack.length - 1; k > 0; k--) if (stack[k].tagName === t) { stack.length = k; break; }
+      } else if (m[2]) {
+        const cls = (/(?:^|\s)class="([^"]*)"/.exec(m[3] || '') || [])[1] || '';
+        const el = {
+          nodeType: 1, tagName: m[2].toUpperCase(), className: cls, childNodes: [],
+          getAttribute: k => (k === 'class' ? cls : null), querySelector: () => null,
+        };
+        top.childNodes.push(el);
+        if (['BR', 'HR', 'IMG', 'INPUT'].indexOf(el.tagName) < 0) stack.push(el);
+      } else if (m[4] != null && m[4] !== '') {
+        top.childNodes.push({ nodeType: 3, nodeValue: ent(m[4]) });
+      }
+    }
+    return root;
+  }
+  /** 走一遍真实主路径：解析 → DOM → 拼回源文件 */
+  function roundTrip(src, rawBytes) {
+    const r = DV.rtf.parse(src, { decodeHex: decode936, softWrap: true });
+    return DV.rtf.rebuildSource(src, nodes(r.html), rawBytes);
+  }
+  const parCount = s => (String(s).match(/\\par(?![a-z])/g) || []).length;
+  const bulletCount = s => (String(s).match(/\\u8226/g) || []).length;
+
+  console.log('\n== 写回往返 ==');
+  {
+    // P0-8：每保存一次就多一个空段落
+    const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil A;}}'
+      + '\\pard\\f0\\fs24 第一段\\par 第二段\\par 第三段\\par}';
+    let cur = src;
+    const n0 = parCount(src);
+    let grew = false;
+    for (let i = 0; i < 3; i++) {
+      cur = roundTrip(cur);
+      if (parCount(cur) !== n0) grew = true;
+    }
+    ok(!grew, 'P0-8：连续保存三次，\\par 数不变', n0 + ' → ' + parCount(cur));
+    const rp = DV.rtf.parse(cur, { decodeHex: decode936, softWrap: true });
+    ok(rp.stats.paragraphs === 3, 'P0-8：段落数仍是 3，实际 ' + rp.stats.paragraphs);
+  }
+
+  {
+    // P0-9：正文首个 \uN / \bullet 被吞进前言 → 内容重复
+    const src = '{\\rtf1\\ansi\\ansicpg936\\deff0\\u31532?\\u19968?\\u27573?\\par}';
+    const out = roundTrip(src);
+    const first = (out.match(/\\u31532/g) || []).length;
+    ok(first === 1, 'P0-9：首个 \\uN 只出现一次，实际 ' + first, JSON.stringify(out));
+    ok(out.indexOf('\\pard') >= 0, 'P0-9：前言与正文正确拼合');
+  }
+
+  {
+    // P0-10：列表项保存后多出一个字面 •
+    const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil A;}}'
+      + '\\pard\\li720\\fi-360{\\pntext\\bullet\\tab}第一项\\par}';
+    const r = DV.rtf.parse(src, { decodeHex: decode936, softWrap: true });
+    const bulletsInDom = (r.html.match(/\u2022/g) || []).length;
+    ok(bulletsInDom === 1, 'P0-10：解析后只有一个项目符号，实际 ' + bulletsInDom, r.html);
+    const out = roundTrip(src);
+    ok(bulletCount(out) === 1, 'P0-10：保存后项目符号数不变，实际 ' + bulletCount(out), JSON.stringify(out));
+    const again = roundTrip(out);
+    ok(bulletCount(out) === bulletCount(again), 'P0-10：再保存一次仍然只有一个');
+  }
+
+  {
+    // P0-7：写回守卫必须认全 \headerl/\footerr/\field/\fldinst/\shpinst/\mmath
+    const cases = ['headerl', 'headerr', 'footerl', 'footerr', 'field', 'fldinst',
+      'shpinst', 'mmath', 'pict', 'footnote', 'annotation'];
+    cases.forEach(w => {
+      const hit = DV.rtf.unmodeledDestinations('{\\rtf1\\ansi{\\' + w + ' x}}');
+      ok(hit.indexOf(w) >= 0, 'P0-7：守卫拦得住 \\' + w, JSON.stringify(hit));
+    });
+    const plain = DV.rtf.unmodeledDestinations('{\\rtf1\\ansi\\pard 普通正文\\par}');
+    ok(plain.length === 0, 'P0-7：普通正文不被误拦', JSON.stringify(plain));
+  }
+
+  {
+    // P0-6：前言按原始字节透传（GBK 字体名不再触发 latin1 编码失败）
+    const head = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil\\fcharset134 ';
+    const tail = ';}}\\pard\\f0\\fs24 正文\\par}';
+    const bytes = [];
+    // 「宋体」的 GBK 字节 = CB CE CC E5
+    const rawName = [0xCB, 0xCE, 0xCC, 0xE5];
+    for (const ch of head) bytes.push(ch.charCodeAt(0));
+    rawName.forEach(b => bytes.push(b));
+    for (const ch of tail) bytes.push(ch.charCodeAt(0));
+    const raw = Uint8Array.from(bytes);
+    const text = new TextDecoder('gb18030').decode(raw);
+    const out = roundTrip(text, raw);
+    // 写回串的每个字符都必须 ≤ 0xFF，才能按 latin1 逐字节还原
+    let allByte = true;
+    for (let i = 0; i < out.length; i++) if (out.charCodeAt(i) > 0xFF) { allByte = false; break; }
+    ok(allByte, 'P0-6：写回串全部落在 latin1 范围内（可逐字节还原）');
+    const prefix = out.slice(0, out.indexOf('\\pard'));
+    const wantPrefix = Buffer.from(raw.subarray(0, raw.length)).toString('latin1');
+    ok(prefix === wantPrefix.slice(0, prefix.length),
+      'P0-6：前言与原始字节逐字节一致');
+    ok(out.indexOf('\u5b8b\u4f53') < 0, 'P0-6：前言里的 GBK 字体名没有变成 Unicode 字符');
+  }
+}
+
 /* ================== 汇总 ================== */
 console.log('\n---------------------------');
 console.log(`通过 ${pass}   失败 ${fail}`);

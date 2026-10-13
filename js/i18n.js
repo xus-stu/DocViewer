@@ -449,6 +449,7 @@ DV.i18n = (function () {
     "（首次写入会生成 .bak 备份）。也可以随时点工具栏的「保存」立即写回。 RTF 会按文件自身的字体与字号重新生成。": " (a .bak backup is created on the first write). You can also click Save in the toolbar at any time. RTF is regenerated using the file’s own font and size.",
     /* ---- 写回保护提示 ---- */
     "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存": "This RTF contains images, headers/footers or footnotes that the reader does not model; writing back would delete them, so the save was blocked",
+    "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容（{x}），写回会丢掉它们，已阻止保存": "This RTF contains content the reader does not model ({x}); writing back would delete it, so the save was blocked",
     "写回没有收到确认，改动仍标记为未保存": "The write was not confirmed; the change is still marked unsaved",
     "文件超过 {mb} MB，已跳过（避免卡死）": "File is larger than {mb} MB and was skipped to avoid freezing",
     "请至少输入 2 个字符": "Type at least 2 characters",

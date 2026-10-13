@@ -139,6 +139,67 @@ let stillLink = (try? FileManager.default.destinationOfSymbolicLink(atPath: link
 ok(stillLink, "写软链后仍是软链（未替换成普通文件）")
 ok(String(data: read("real.txt"), encoding: .utf8) == "改过的内容", "内容写进了链接目标")
 
+// 16) P0-5：源文件读不出来必须中止，绝不能当成"空文件"往下走
+//     （拿一个目录当"读不出来的文件"：存在、可写，但读内容会失败）
+let badPath = p("readfail.txt")
+try? FileManager.default.createDirectory(atPath: badPath, withIntermediateDirectories: true)
+var readFail = false
+do { try FileWriter.writeText(path: badPath, text: "内容", encoding: "utf-8") } catch { readFail = true }
+ok(readFail, "读取失败时中止写入（不是静默当成空文件）")
+ok(!FileManager.default.fileExists(atPath: badPath + ".bak"),
+   "中止时不会留下 0 字节的假 .bak")
+ok(!FileManager.default.fileExists(atPath: badPath + ".bak.prev"),
+   "中止时不会留下 0 字节的假 .bak.prev")
+
+// 17) P0-4：BOM 是编码语义的一部分，写回必须保留
+let bom8 = Data([0xEF, 0xBB, 0xBF]) + "旧内容\n".data(using: .utf8)!
+write("bom8.txt", bom8)
+w(p("bom8.txt"), "新内容\n", "utf-8-bom")
+ok(Array(read("bom8.txt").prefix(3)) == [0xEF, 0xBB, 0xBF], "UTF-8 (BOM) 写回保留 EF BB BF",
+   read("bom8.txt").prefix(3).map { String(format: "%02X", $0) }.joined(separator: " "))
+ok(String(data: read("bom8.txt").dropFirst(3), encoding: .utf8) == "新内容\n", "BOM 之后的正文正确")
+
+let bom16 = Data([0xFF, 0xFE]) + "旧内容\n".data(using: .utf16LittleEndian)!
+write("bom16.txt", bom16)
+w(p("bom16.txt"), "新内容\n", "utf-16le-bom")
+let d16 = read("bom16.txt")
+ok(Array(d16.prefix(2)) == [0xFF, 0xFE], "UTF-16LE (BOM) 写回保留 FF FE",
+   d16.prefix(2).map { String(format: "%02X", $0) }.joined(separator: " "))
+ok(String(data: d16.dropFirst(2), encoding: .utf16LittleEndian) == "新内容\n",
+   "UTF-16LE 正文能解回")
+ok(FileWriter.bomPrefix("utf-16be-bom") == Data([0xFE, 0xFF]), "UTF-16BE 的 BOM 是 FE FF")
+ok(FileWriter.bomPrefix("utf-8") == nil, "不带 BOM 的编码不额外插 BOM")
+
+// 18) P1-12：windows-1252 不能被当成 isoLatin1（’ 在 latin1 里根本不存在）
+ok(FileWriter.stringEncoding("WINDOWS-1252") == .windowsCP1252,
+   "WINDOWS-1252 映射为 .windowsCP1252 而不是 .isoLatin1")
+ok(FileWriter.stringEncoding("utf-16le-bom") == .utf16LittleEndian, "utf-16le-bom 映射正确")
+write("cp.txt", "old".data(using: .utf8)!)
+do {
+    try FileWriter.writeText(path: p("cp.txt"), text: "it\u{2019}s", encoding: "windows-1252")
+    ok(read("cp.txt") == Data([0x69, 0x74, 0x92, 0x73]), "cp1252 的 ’ 落成 0x92",
+       read("cp.txt").map { String(format: "%02X", $0) }.joined(separator: " "))
+} catch {
+    ok(false, "windows-1252 必须能写回带 ’ 的文本", "\(error)")
+}
+
+// 19) 新建文件不该留下 0 字节的假备份（以前会永久固化一个空 .bak/.bak.prev）
+try? FileManager.default.removeItem(atPath: p("fresh.txt"))
+try? FileManager.default.removeItem(atPath: p("fresh.txt.bak"))
+try? FileManager.default.removeItem(atPath: p("fresh.txt.bak.prev"))
+do { try FileWriter.writeText(path: p("fresh.txt"), text: "新", encoding: "utf-8") } catch { }
+ok(!FileManager.default.fileExists(atPath: p("fresh.txt.bak")), "新建文件不生成 0 字节 .bak")
+ok(!FileManager.default.fileExists(atPath: p("fresh.txt.bak.prev")), "新建文件不生成 0 字节 .bak.prev")
+
+// 20) .bak.prev 被目录占着时中止，绝不覆盖/删除用户的东西
+write("e.txt", "原始".data(using: .utf8)!)
+try? FileManager.default.createDirectory(atPath: p("e.txt.bak.prev"), withIntermediateDirectories: true)
+var aborted2 = false
+do { try FileWriter.writeText(path: p("e.txt"), text: "新内容", encoding: "utf-8") } catch { aborted2 = true }
+ok(aborted2, ".bak.prev 是目录时中止写入")
+ok(String(data: read("e.txt"), encoding: .utf8) == "原始", "中止后源文件保持原样")
+ok(FileManager.default.fileExists(atPath: p("e.txt.bak.prev")), ".bak.prev 目录仍在")
+
 print("通过 \(pass)   失败 \(fail)")
 try? FileManager.default.removeItem(atPath: tmp)
 exit(fail == 0 ? 0 : 1)
