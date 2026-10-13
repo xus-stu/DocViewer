@@ -453,6 +453,10 @@ DV.i18n = (function () {
     "写回没有收到确认，改动仍标记为未保存": "The write was not confirmed; the change is still marked unsaved",
     /* ---- 文件在外部被改过：三选一 ---- */
     "文件已在外部被修改": "The file changed on disk",
+    "这份 RTF 里有本阅读器不支持的内容": "This RTF contains content this reader does not support",
+    "继续保存会丢掉这些内容：{x}。建议先备份原文件，或取消后用别的软件处理。": "Saving anyway will drop: {x}. Back up the original first, or cancel and edit it in another app.",
+    "取消保存": "Cancel",
+    "仍然保存（会丢内容）": "Save anyway (loses content)",
     "这个文件在磁盘上被改过了，直接写回会覆盖别人的改动。": "This file changed on disk since it was opened. Writing back now would overwrite those changes.",
     "重新加载磁盘版本": "Reload from disk",
     "仍然覆盖": "Overwrite anyway",

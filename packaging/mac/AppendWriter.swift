@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 把编辑结果写回源文件。独立成文件是为了能单独编译做真实文件测试
 /// （见 tests/append_test.swift）。
@@ -74,8 +75,64 @@ enum FileWriter {
             }
             try old.write(to: prev, options: .atomic)
         }
-        try data.write(to: url, options: .atomic)
+        try writePreserving(path: url.path, data: data, hadOriginal: exists)
         return data
+    }
+
+    /// 文件有几个硬链接名（1 表示没有别的名字指着它）
+    static func linkCount(_ path: String) -> Int {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return 1 }
+        return Int(st.st_nlink)
+    }
+
+    /**
+     落盘。目标是「内容换了，文件的身份尽量别换」：
+     - 有硬链接的文件改成原地覆写 —— 原子替换会换掉 inode，
+       别的链接名就永远看不到新内容了（评审实测：inode 变了）
+     - 其余情况仍然原子写，但把扩展属性带过去
+       （评审实测：原子替换会丢掉 kMDItemWhereFroms 这类 xattr）
+     */
+    static func writePreserving(path: String, data: Data, hadOriginal: Bool) throws {
+        if hadOriginal && linkCount(path) > 1 {
+            try data.write(to: URL(fileURLWithPath: path), options: [])
+            return
+        }
+        let attrs = hadOriginal ? readXattrs(path) : []
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        if !attrs.isEmpty { writeXattrs(path, attrs) }
+    }
+
+    /// 读出文件上的全部扩展属性（失败就当没有）
+    static func readXattrs(_ path: String) -> [(String, Data)] {
+        var out: [(String, Data)] = []
+        let size = listxattr(path, nil, 0, 0)
+        guard size > 0 else { return out }
+        var names = [UInt8](repeating: 0, count: size)
+        let n = listxattr(path, &names, size, 0)
+        guard n > 0 else { return out }
+        var i = 0
+        while i < Int(n) {
+            var buf: [UInt8] = []
+            while i < Int(n) && names[i] != 0 { buf.append(names[i]); i += 1 }
+            i += 1
+            guard let name = String(bytes: buf, encoding: .utf8), !name.isEmpty else { continue }
+            let vsize = getxattr(path, name, nil, 0, 0, 0)
+            guard vsize > 0 else { continue }
+            var value = [UInt8](repeating: 0, count: vsize)
+            let got = getxattr(path, name, &value, vsize, 0, 0)
+            if got > 0 { out.append((name, Data(value.prefix(got)))) }
+        }
+        return out
+    }
+
+    /// 把扩展属性写回新文件；个别受保护的名字写不进去（比如 com.apple.quarantine）就跳过
+    static func writeXattrs(_ path: String, _ items: [(String, Data)]) {
+        for (name, value) in items {
+            value.withUnsafeBytes { raw in
+                _ = setxattr(path, name, raw.baseAddress, value.count, 0, 0)
+            }
+        }
     }
 
     /// 文本按指定编码写入（plain 模式）

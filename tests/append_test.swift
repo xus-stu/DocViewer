@@ -200,6 +200,34 @@ ok(aborted2, ".bak.prev 是目录时中止写入")
 ok(String(data: read("e.txt"), encoding: .utf8) == "原始", "中止后源文件保持原样")
 ok(FileManager.default.fileExists(atPath: p("e.txt.bak.prev")), ".bak.prev 目录仍在")
 
+// 21) 硬链接：写回后两个名字都指向同一份新内容（inode 不被换掉）
+let hlBase = p("hl-base.txt"), hlLink = p("hl-link.txt")
+write("hl-base.txt", "第一版".data(using: .utf8)!)
+try? FileManager.default.removeItem(atPath: hlLink)
+try? FileManager.default.linkItem(atPath: hlBase, toPath: hlLink)
+let inoBefore = FileWriter.linkCount(hlBase)
+w(hlBase, "第二版", "utf-8")
+ok(FileWriter.linkCount(hlBase) > 1, "硬链接写回后仍是硬链接（inode 没被换掉）")
+ok(String(data: read("hl-base.txt"), encoding: .utf8) == "第二版", "硬链接本体已更新")
+ok(String(data: read("hl-link.txt"), encoding: .utf8) == "第二版", "另一个链接名也看到新内容")
+ok(inoBefore > 1, "测试前提：文件确实有多个链接名")
+
+// 22) 扩展属性不能因为原子替换而丢掉
+let xaPath = p("xattr.txt")
+write("xattr.txt", "内容".data(using: .utf8)!)
+let xaName = "user.docviewer.test"
+let xaValue = Data("标记".utf8)
+xaValue.withUnsafeBytes { raw in
+    _ = setxattr(xaPath, xaName, raw.baseAddress, xaValue.count, 0, 0)
+}
+let hadXattr = FileWriter.readXattrs(xaPath).contains { $0.0 == xaName }
+ok(hadXattr, "测试前提：扩展属性确实写上了")
+w(xaPath, "新内容", "utf-8")
+ok(String(data: read("xattr.txt"), encoding: .utf8) == "新内容", "带 xattr 的文件写回成功")
+ok(FileWriter.readXattrs(xaPath).contains { $0.0 == xaName && $0.1 == xaValue },
+   "写回后扩展属性仍在且值不变",
+   FileWriter.readXattrs(xaPath).map { $0.0 }.joined(separator: ","))
+
 print("通过 \(pass)   失败 \(fail)")
 try? FileManager.default.removeItem(atPath: tmp)
 exit(fail == 0 ? 0 : 1)

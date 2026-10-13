@@ -1375,15 +1375,16 @@ window.DV = window.DV || {};
     clearTimeout(saveTimer);
     setSaveState('saving');        // dirty 等原生回包确认后再清（A#8）
 
-    // A#3：含图片 / 页眉页脚 / 脚注 / 域这类没建模的内容时，写回会把它们整段删掉
-    if (item.kind === 'rtf' && !plain) {
+    // A#3：含图片 / 页眉页脚 / 脚注 / 域这类没建模的内容时，写回会把它们整段删掉。
+    // A3 复核：拦是拦住了，但没有任何出口 —— 用户想「我就是要存」也没办法。
+    if (item.kind === 'rtf' && !plain && !(opts && opts.allowLossy)) {
       const lost = hasUnmodeledRtf(item);
       if (lost.length) {
-        DV.toast(DV.t('这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容（{x}），写回会丢掉它们，已阻止保存',
-          { x: lost.join('、') }), 'err', 4600);
         DV.Log.warn('已阻止写回（含未建模内容 ' + lost.join('、') + '）：' + item.name);
         setSaveState('unsaved');
         dirty = true;
+        item.unsaved = true;
+        askLossySave(item, lost);
         return false;
       }
     }
@@ -1487,6 +1488,26 @@ window.DV = window.DV || {};
     const posted = saveEdit({ force: true });
     if (posted) dirty = false;           // DOM 已经交出去了；写没写成功看回包
     return posted;
+  }
+
+  /**
+   * A3：写回会丢掉未建模内容时的出口。
+   * 默认不写；用户明确点「仍然保存」才带着 allowLossy 再走一次。
+   */
+  function askLossySave(item, lost) {
+    DV.choose({
+      title: DV.t('这份 RTF 里有本阅读器不支持的内容'),
+      text: DV.t('继续保存会丢掉这些内容：{x}。建议先备份原文件，或取消后用别的软件处理。',
+        { x: lost.join('、') }),
+      options: [
+        { id: 'cancel', label: DV.t('取消保存'), kind: 'primary' },
+        { id: 'lossy', label: DV.t('仍然保存（会丢内容）'), kind: 'danger' },
+      ],
+    }).then(function (pick) {
+      if (pick !== 'lossy') return;
+      if (saveEdit({ force: true, allowLossy: true })) dirty = false;
+      else { item.unsaved = true; refreshSaveState(); }
+    });
   }
 
   /** 原生写完后回传结果 */
@@ -1709,7 +1730,10 @@ window.DV = window.DV || {};
       state.files.push(toItem(f, 'f' + (++uid)));
     });
     state.wrap = data.wrap !== false;
-    state.raw = !!data.raw;
+    // C27：源码视图下 RTF 走的是「纯文本」写回分支，未建模内容的守卫是关的，
+    // 恢复成源码视图再编辑就有整份覆盖的风险。恢复会话时统一回到渲染视图。
+    state.raw = false;
+    if (data.raw) DV.Log.info('上次停在源码视图，恢复时已切回渲染视图（避免对 RTF 直接改写源码）');
     // P0-3：会话恢复出来的文件在原生侧**没有登记过**，写回会被「没打开过这个文件」拒掉。
     // 这里重新登记一次（只登记路径，不投递内容）。
     registerNativePaths();

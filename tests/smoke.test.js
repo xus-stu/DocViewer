@@ -1100,7 +1100,7 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       localStorageData['docviewer.session'] = JSON.stringify({
         v: 1, files: [{ name: '恢复.rtf', path: '/tmp', fullPath: '/tmp/docviewer-restored.rtf',
                         kind: 'rtf', text: '{\\rtf1\\ansi\\pard 正文\\par}', encoding: 'UTF-8', size: 24 }],
-        active: '恢复.rtf',
+        active: '恢复.rtf', raw: true,      // C27：上次停在源码视图
       });
       DV.Settings.set({ rememberSession: true });
       const sent = [];
@@ -1111,6 +1111,7 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       ok(!!allow, 'P0-3：恢复后向原生重新登记了可写路径');
       ok(allow && allow.paths && allow.paths.indexOf('/tmp/docviewer-restored.rtf') >= 0,
          'P0-3：登记的就是恢复出来的那个路径', JSON.stringify(allow && allow.paths));
+      ok(App.state.raw === false, 'C27：恢复会话后回到渲染视图（不会直接改写 RTF 源码）');
       delete windowObj.webkit;
       // 还原
       state_clear();
@@ -1369,6 +1370,41 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       ok(/编码写入失败/.test(App.writeErrText('encode failed: latin1')), 'C26：编码失败已本地化',
          App.writeErrText('encode failed: latin1'));
       ok(App.writeErrText('something else') === 'something else', 'C26：认不出来的原样显示');
+    }
+
+    // ---- A3：拦截未建模内容时必须留一个「我就是要存」的出口 ----
+    {
+      const src = '{\\rtf1\\ansi\\ansicpg936\\deff0{\\fonttbl{\\f0\\fnil A;}}'
+        + '\\pard\\f0\\fs24 正文\\par{\\*\\headerl 页眉}}';
+      const bytes = new Uint8Array(Buffer.from(src, 'latin1'));
+      await App.ingest([mk('含页眉.rtf', '')].map(() => ({
+        id: 'a3-rtf', name: '含页眉.rtf', path: '', size: bytes.length, kind: 'rtf',
+        file: { name: '含页眉.rtf', size: bytes.length, webkitRelativePath: '',
+                arrayBuffer: async () => bytes.buffer.slice(0) },
+        text: '', bytes: bytes.length,
+      })), { showProgress: false });
+      const it = App.state.files.find(f => f.name === '含页眉.rtf');
+      ok(!!it, 'A3：含页眉的 RTF 已导入');
+      it.fullPath = '/tmp/docviewer-a3.rtf';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id); App.applyEditMode();
+      App.els.doc.dispatch('input', {});
+      ok(App.manualSave() === false, 'A3：默认拦住写回（headerl 现在拦得住了）');
+      ok(sent.filter(m => m.action === 'writeFile').length === 0, 'A3：拦住时没有发出写回');
+      const modal = documentObj.querySelector('#dvChoose');
+      ok(!!modal, 'A3：弹出「仍然保存」的出口');
+      const lossy = documentObj.querySelectorAll('.dv-choose-actions .btn')
+        .find(b => b.textContent === DV.t('仍然保存（会丢内容）'));
+      ok(!!lossy, 'A3：出口按钮存在');
+      lossy.dispatch('click', {});
+      await tick();
+      ok(sent.filter(m => m.action === 'writeFile').length === 1,
+         'A3：点了「仍然保存」之后才真的写回', 'writes=' + sent.length);
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+      App.closeFile(it.id);
     }
 
     p1Restore();

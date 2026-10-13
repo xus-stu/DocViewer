@@ -201,6 +201,21 @@ console.log('\n== RTF 渲染 ==');
   ok(/color:\s*rgb\(0,\s*0,\s*0\)/.test(r2.html || ''), '显式黑色仍输出');
 }
 
+/* ================== 链接/图片协议白名单（C23） ================== */
+console.log('\n== 协议白名单 ==');
+{
+  const r = DV.md.render('[x](javascript:alert(1)) ![i](javascript:alert(1))\n\n'
+    + '![d](data:text/html;base64,PHNjcmlwdD4=) ![ok](data:image/png;base64,iVBORw0KGgo=)\n\n'
+    + '[rel](//evil.com) ![rel](//evil.com)');
+  const h = r.html;
+  ok(h.indexOf('href="javascript:') < 0, 'C23：javascript: 链接被降级');
+  ok(h.indexOf('src="javascript:') < 0, 'C23：javascript: 图片被降级', h.slice(0, 200));
+  ok(h.indexOf('src="data:text/html') < 0, 'C23：data:text/html 图片被降级');
+  ok(h.indexOf('src="data:image/png') >= 0, 'C23：data:image/* 仍然放行');
+  ok(h.indexOf('href="//evil.com"') < 0, 'C23：协议相对链接不再原样放行');
+  ok(h.indexOf('https://evil.com') >= 0, 'C23：协议相对地址明确走 https');
+}
+
 /* ================== 写回往返（解析 → DOM → rebuildSource） ==================
    这一组是补回来的：以前三套测试全绿，但写回路径（P0 里的每一条）根本没被覆盖。 */
 {

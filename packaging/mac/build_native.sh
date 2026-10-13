@@ -67,9 +67,22 @@ if ! codesign --force --deep --sign - "$APP" >/dev/null 2>&1; then
   echo "  ✗ 签名失败"; exit 1
 fi
 
-# B14：到这一步都成功了，才替换目标目录里的旧 app
-rm -rf "$OUT/DocViewer.app"
-mv "$APP" "$OUT/DocViewer.app"
+# B14：到这一步都成功了，才替换目标目录里的旧 app。
+# 注意别用 `rm -rf 旧 && mv 新 旧`：mv 失败（跨卷拷贝中途出错、磁盘满）时
+# 旧 app 已经被删掉，用户手上什么都没剩。先把旧的挪走，装好再删。
+OLD="$STAGE/previous.app"
+if [ -e "$OUT/DocViewer.app" ]; then
+  if ! mv "$OUT/DocViewer.app" "$OLD"; then
+    echo "  ✗ 无法移走旧的 DocViewer.app（目标目录不可写？）"; exit 1
+  fi
+fi
+if ! mv "$APP" "$OUT/DocViewer.app"; then
+  echo "  ✗ 安装失败，正在把原来的 app 放回去"
+  rm -rf "$OUT/DocViewer.app"
+  [ -e "$OLD" ] && mv "$OLD" "$OUT/DocViewer.app"
+  exit 1
+fi
+[ -e "$OLD" ] && rm -rf "$OLD"
 APP="$OUT/DocViewer.app"
 
 echo "完成 → $APP   版本 $VER"

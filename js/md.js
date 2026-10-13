@@ -19,23 +19,32 @@ DV.md = (function () {
     let s = String(text).replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (m, tick, code) =>
       stash('<code>' + esc(code.replace(/^ (.*) $/, '$1')) + '</code>'));
 
-    // 2) 图片 ![alt](src "title")
-    s = s.replace(/!\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,
-      (m, alt, src, title) =>
-        stash('<img src="' + DV.escAttr(src) + '" alt="' + DV.escAttr(alt) + '"' +
-          (title ? ' title="' + DV.escAttr(title) + '"' : '') + ' loading="lazy">'));
-
     /**
-     * A17：链接协议白名单。
+     * A17 / C23：协议白名单。
      * 只放行 http/https/mailto/页内锚点 —— 否则 `[x](javascript:alert(1))`
-     * 会生成一个可点的 <a href="javascript:…">，而页面持有原生写回桥。
+     * 会生成一个可点的 <a href="javascript:…">/`<img src="javascript:…">`，
+     * 而页面持有原生写回桥。`//host` 这种协议相对写法也当外链处理。
      */
     function safeHref(h) {
       const u = String(h || '').trim();
       if (/^(https?:|mailto:|tel:|#)/i.test(u)) return u;
+      if (/^\/\//.test(u)) return 'https:' + u;             // 协议相对 → 明确走 https
       if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return '#';     // 其它协议一律降级成空锚点
       return u;                                            // 相对路径
     }
+
+    /** 图片地址：在链接白名单之外额外放行 data:image/*（内联小图是常见用法） */
+    function safeImgSrc(src) {
+      const u = String(src || '').trim();
+      if (/^data:image\//i.test(u)) return u;
+      return safeHref(u);
+    }
+
+    // 2) 图片 ![alt](src "title")
+    s = s.replace(/!\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,
+      (m, alt, src, title) =>
+        stash('<img src="' + DV.escAttr(safeImgSrc(src)) + '" alt="' + DV.escAttr(alt) + '"' +
+          (title ? ' title="' + DV.escAttr(title) + '"' : '') + ' loading="lazy">'));
 
     // 3) 链接 [text](href "title")
     s = s.replace(/\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,

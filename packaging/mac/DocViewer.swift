@@ -407,12 +407,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     /// 这里只放宽读/写白名单，不投递内容。
     private func handleAllowFiles(_ body: [String: Any]) {
         guard let paths = body["paths"] as? [String] else { return }
-        var n = 0
-        for p in paths where !p.isEmpty {
-            OpenedFiles.shared.allow(p)
-            n += 1
+        // 登记要读盘算哈希；恢复会话可能有几十个文件，别占着主线程
+        DispatchQueue.global(qos: .utility).async {
+            var n = 0
+            for p in paths where !p.isEmpty {
+                OpenedFiles.shared.allow(p)
+                n += 1
+            }
+            NSLog("DocViewer: 重新登记 %d 个路径", n)
         }
-        NSLog("DocViewer: 重新登记 %d 个路径", n)
     }
 
     // MARK: 写回源文件（整文件替换）
@@ -498,10 +501,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return out
     }
 
+    /// 展开文件夹 + 登记白名单都要读盘（大目录会递归枚举，登记还要算内容哈希），
+    /// 这些以前全在主线程上做，导入一个大文件夹界面就卡住。现在挪到后台队列，
+    /// 只把最后的注入放回主线程。
+    private let importQueue = DispatchQueue(label: "com.docviewer.import")
+
     private func postFiles(_ urls: [URL], attempt: Int = 0) {
-        let urls = AppDelegate.expandFolders(urls)      // 传进来的是文件夹也能用
-        let paths = urls.map { $0.path }
-        paths.forEach { OpenedFiles.shared.allow($0) }       // B6：登记为允许读写
+        if attempt == 0 {
+            importQueue.async { [weak self] in
+                let expanded = AppDelegate.expandFolders(urls)
+                let paths = expanded.map { $0.path }
+                paths.forEach { OpenedFiles.shared.allow($0) }       // B6：登记为允许读写
+                DispatchQueue.main.async { self?.injectFiles(paths, urls: expanded, attempt: 0) }
+            }
+            return
+        }
+        injectFiles(urls.map { $0.path }, urls: urls, attempt: attempt)
+    }
+
+    private func injectFiles(_ paths: [String], urls: [URL], attempt: Int) {
         // B19：用 JSONSerialization 生成数组字面量，文件名里的换行/U+2028 不会再让整批注入失败
         let json = (try? JSONSerialization.data(withJSONObject: paths)) ?? Data("[]".utf8)
         let arr = String(data: json, encoding: .utf8) ?? "[]"   // 已经是 ["a","b"] 形式
@@ -520,7 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                self.postFiles(urls, attempt: attempt + 1)
+                self.injectFiles(paths, urls: urls, attempt: attempt + 1)
             }
         }
     }
@@ -555,7 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         panel.prompt = "导入"
         panel.begin { resp in
             guard resp == .OK, let dir = panel.urls.first else { return }
-            self.postFiles(Self.expandFolders([dir]))
+            self.postFiles([dir])           // 展开挪到后台队列里做
         }
     }
 
