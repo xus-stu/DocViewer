@@ -215,6 +215,34 @@ window.DV = window.DV || {};
     try { new TextDecoder('gb18030'); return true; } catch (e) { return false; }
   }
 
+  /**
+   * C26：原生回的错误串是英文，直接抛给用户看不懂。
+   * 能对上号的都换成中文；认不出来的原样显示（至少不会误报）。
+   */
+  function writeErrText(err) {
+    const e = String(err == null ? '' : err);
+    const map = [
+      [/^missing path$/i, '缺少文件路径'],
+      [/^missing text$/i, '缺少要写入的内容'],
+      [/^file not found$/i, '文件不存在'],
+      [/^cannot read$/i, '读取原文件失败，已中止写入'],
+      [/^refused to truncate a non-empty file$/i, '拒绝把有内容的文件清空'],
+      [/^file is read-only$/i, '文件是只读的'],
+      [/^target directory is not writable$/i, '目标目录不可写'],
+      [/^cannot write backup/i, '无法生成备份（.bak 不可用），已中止写入'],
+      [/not opened by this app/i, '这个文件不是本次打开的，已拒绝写入'],
+      [/^changed on disk$/i, '文件在磁盘上被改过'],
+      [/^encode failed:\s*(.+)$/i, '按 {x} 编码写入失败（正文里有该编码无法表示的字符）'],
+      [/^unknown encoding:\s*(.+)$/i, '不认识的编码：{x}'],
+    ];
+    for (const [re, zh] of map) {
+      const m = re.exec(e);
+      if (!m) continue;
+      return zh.indexOf('{x}') >= 0 ? zh.replace('{x}', m[1] || '?') : zh;
+    }
+    return e;
+  }
+
   /** 原生回执里的规范化编码名 → 界面上显示的编码名（写回后状态栏不能显示 latin1） */
   function displayEncName(n) {
     switch (String(n || '').toLowerCase()) {
@@ -394,8 +422,9 @@ window.DV = window.DV || {};
   function countLines(t) { return t ? t.split('\n').length : 0; }
 
   /* ================= 列表渲染 ================= */
+  /** 类型信息：损坏的会话 / 未知扩展名也要拿到一个安全的结果（P1-16） */
   function kindBadge(item) {
-    const k = DV.KIND[item.kind] || DV.KIND.other;
+    const k = (item && DV.KIND[item.kind]) || DV.KIND.other;
     return k;
   }
 
@@ -763,9 +792,10 @@ window.DV = window.DV || {};
       try { prev.scrollTop = els.docScroll.scrollTop; } catch (e) { /* 忽略 */ }
       // 2) 还有没写回的改动就先写回它自己。定时器是全局的，等它到点再切文件
       //    会拿当前文件去写，等于把 B 的内容写进 A 的文件路径。
+      //    脏标记记在 prev.unsaved 上，回包确认后才清（P1-13）。
       clearTimeout(saveTimer);
-      if (dirty && canEdit()) saveEdit();
-      dirty = false;
+      flushEdits();
+      dirty = false;                    // DOM 已经换成下一个文件了
     }
     const item = state.files.find(f => f.id === id);
     if (!item) return;
@@ -808,7 +838,7 @@ window.DV = window.DV || {};
     els.docTitle.title = item.path || item.name;
     const mf = DV.Settings.get().metaFields || {};
     const metaParts = [];
-    if (mf.path) metaParts.push(item.path || DV.t(DV.KIND[item.kind].label));
+    if (mf.path) metaParts.push(item.path || DV.t(k.label));
     if (mf.type) metaParts.push(DV.t(k && k.label ? k.label : DV.KIND.other.label));
     if (mf.size) metaParts.push(DV.fmtBytes(item.bytes || item.size));
     if (mf.encoding) metaParts.push(item.encoding || '—');
@@ -944,7 +974,7 @@ window.DV = window.DV || {};
   function closeFile(id) {
     // A#7：要关的是当前正在编辑且有未落盘改动的文件，先落盘再关
     const act = active();
-    if (act && act.id === id && dirty && canEdit()) saveEdit();
+    if (act && act.id === id) flushEdits();
     clearTimeout(saveTimer);
     const i = state.files.findIndex(f => f.id === id);
     if (i < 0) return;
@@ -1234,9 +1264,11 @@ window.DV = window.DV || {};
   const AUTOSAVE_MS = 90 * 1000;         // 自动保存间隔：1.5 分钟
   let scrollSaveTimer = 0;               // 滚动后延迟写会话
   let sessionWriteTimer = 0;             // 会话写入去抖
-  let pendingWrite = null;               // 这次写回的内容快照（回包只认它）
-  let saveTimeoutTimer = 0;              // 写回确认超时
+  // 写回的内容快照，按路径存：以前是单槽位，两个文件先后写回时会互相顶掉，
+  // 后一个回包把前一个的快照丢了（脏标记和编码名都跟着错）。
+  const pendingWrites = new Map();       // path -> { path, itemId, text, encoding, at, rev, timer }
   let saveTimer = 0, dirty = false, wantFocus = false;
+  let dirtyRev = 0;                      // 每次输入 +1，用来判断回包时 DOM 是否又变了
   // 当前 DOM 是用哪种容器渲染出来的（P0-1：写回必须按它，而不是按「此刻」的 state.raw）
   let paintedFor = null, paintedPlain = false;
 
@@ -1246,7 +1278,8 @@ window.DV = window.DV || {};
       DV.toast(DV.t('当前不可编辑：设置里的「编辑」为只读，或这个文件不支持写回'), 'warn', 2800);
       return false;
     }
-    if (!dirty) {
+    const act = active();
+    if (!dirty && !(act && act.unsaved)) {
       DV.toast(DV.t('没有需要保存的改动'), '', 1600);
       return false;
     }
@@ -1256,6 +1289,9 @@ window.DV = window.DV || {};
 
   function markDirty() {
     dirty = true;
+    dirtyRev++;
+    const act = active();
+    if (act) act.unsaved = true;         // 脏标记记在文件上，切走再切回来不会丢
     setSaveState('unsaved');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { if (dirty) saveEdit(); }, AUTOSAVE_MS);   // 停手 1.5 分钟自动保存
@@ -1276,9 +1312,14 @@ window.DV = window.DV || {};
     el.className = 'sb-item save-state ' + (show || '');
   }
 
-  /** 进入可编辑 / 切换文件后刷新一次状态显示 */
+  /**
+   * 进入可编辑 / 切换文件 / 回包后刷新一次状态显示。
+   * 只看「当前 DOM 有没有没交出去的改动」和「这个文件有没有写失败的改动」。
+   */
   function refreshSaveState() {
-    setSaveState(dirty ? 'unsaved' : (canEdit() ? 'saved' : ''));
+    const act = active();
+    const unsaved = dirty || !!(act && act.unsaved);
+    setSaveState(unsaved ? 'unsaved' : (canEdit() ? 'saved' : ''));
   }
 
   /** 纯文本视图 → 文本（保留换行；<br> 与块级元素都算换行） */
@@ -1319,10 +1360,17 @@ window.DV = window.DV || {};
     return isPlainView(item);
   }
 
-  function saveEdit() {
-    const tgt = editTarget();
-    if (!tgt) return false;
-    const item = tgt.item;
+  /**
+   * 写回。
+   * opts.force：即使此刻已经切回只读模式也要把改动交出去
+   *（关窗口 / 清空列表 / 复位 / 关掉编辑开关这些出口不能吃掉用户的改动）。
+   */
+  function saveEdit(opts) {
+    const item = active();
+    if (!item) return false;
+    const allowed = canEdit() ||
+      !!(opts && opts.force && !item.merged && item.kind !== 'md' && writablePath(item));
+    if (!allowed) return false;
     const plain = writeAsPlain(item);      // P0-1：不看此刻的 state.raw
     clearTimeout(saveTimer);
     setSaveState('saving');        // dirty 等原生回包确认后再清（A#8）
@@ -1354,45 +1402,122 @@ window.DV = window.DV || {};
     }
     DV.Log.info('写回 ' + item.fullPath + '（' + (payload.encoding) + '，' +
       payload.text.length + ' 字符）');
+    /* P1-15 / C24：内存里的条目立刻换成「用户看到的内容」。
+       以前要等原生回包才更新 item.text，这中间任何一次重绘（典型是切换
+       「按源换行」触发的重新解析）都会拿写回前的旧 HTML 覆盖 #doc，
+       屏幕上看起来就像改动丢了。 */
+    item.text = payload.text;
+    item.lines = countLines(item.text);
+    item.chars = item.text.length;
+    if (item.kind === 'rtf' && !plain) {
+      item.rawSrc = payload.text;
+      renderFile(item);            // 用新正文重算 item.html（只更新数据，不落 DOM）
+    }
     // A#2：把这次要写的内容留一份快照；回包只认这份快照，绝不再从 DOM 回读
     //（否则用户切到别的文件后，回包会把 B 的正文写进 A 的条目）
-    pendingWrite = { path: item.fullPath, text: payload.text, encoding: payload.encoding, at: Date.now() };
+    const old = pendingWrites.get(item.fullPath);
+    if (old && old.timer) clearTimeout(old.timer);
+    const snap = {
+      path: item.fullPath, itemId: item.id, text: payload.text, encoding: payload.encoding,
+      at: Date.now(), rev: dirtyRev, timer: 0, force: false,
+    };
+    pendingWrites.set(item.fullPath, snap);
     try {
       nativeBridge().postMessage(Object.assign({
         action: 'writeFile', path: item.fullPath,
       }, payload));
     } catch (e) {
+      pendingWrites.delete(item.fullPath);
+      item.unsaved = true;
       setSaveState('unsaved');
-      DV.toast(DV.t('写入失败') + '：' + (e.message || e), 'err', 4000);
+      DV.toast(DV.t('写入失败') + '：' + writeErrText(e.message || e), 'err', 4000);
       return false;
     }
     // 原生没回包时别一直停在「保存中…」
-    clearTimeout(saveTimeoutTimer);
-    saveTimeoutTimer = setTimeout(() => {
-      if (pendingWrite && Date.now() - pendingWrite.at >= 8000) {
-        pendingWrite = null;
-        dirty = true;
-        setSaveState('unsaved');
-        DV.toast(DV.t('写回没有收到确认，改动仍标记为未保存'), 'err', 4200);
-      }
+    snap.timer = setTimeout(() => {
+      if (pendingWrites.get(item.fullPath) !== snap) return;   // 已经被新的一次写回顶替
+      pendingWrites.delete(item.fullPath);
+      item.unsaved = true;
+      if (active() === item) dirty = true;
+      refreshSaveState();
+      DV.toast(DV.t('写回没有收到确认，改动仍标记为未保存'), 'err', 4200);
     }, 8200);
     return true;
   }
 
+  /**
+   * 强制覆盖：文件在外部被改过时，用户选「仍然覆盖」走这条路。
+   * 重新发一次同样的内容，带 force 让原生跳过「磁盘上变了吗」的检查。
+   */
+  function forceSave(item, snap) {
+    if (!item || !snap) return false;
+    snap.force = true;
+    snap.at = Date.now();
+    snap.timer = setTimeout(() => {
+      if (pendingWrites.get(item.fullPath) !== snap) return;
+      pendingWrites.delete(item.fullPath);
+      item.unsaved = true;
+      refreshSaveState();
+      DV.toast(DV.t('写回没有收到确认，改动仍标记为未保存'), 'err', 4200);
+    }, 8200);
+    pendingWrites.set(item.fullPath, snap);
+    try {
+      nativeBridge().postMessage({
+        action: 'writeFile', path: item.fullPath,
+        text: snap.text, encoding: snap.encoding, force: true,
+      });
+      DV.Log.info('强制覆盖 ' + item.fullPath);
+      return true;
+    } catch (e) {
+      pendingWrites.delete(item.fullPath);
+      item.unsaved = true;
+      refreshSaveState();
+      return false;
+    }
+  }
+
+  /**
+   * 立刻把还没交出去的改动写回（切文件 / 清空列表 / 复位 / 关窗口前）。
+   * 只负责发出去；成功与否由回包决定，失败时改动仍留在内存里（item.unsaved）。
+   */
+  function flushEdits() {
+    if (!dirty) return false;
+    if (!active()) return false;
+    clearTimeout(saveTimer);
+    const posted = saveEdit({ force: true });
+    if (posted) dirty = false;           // DOM 已经交出去了；写没写成功看回包
+    return posted;
+  }
+
   /** 原生写完后回传结果 */
   window.__DV_WRITE_RESULT = function (res) {
+    const path = (res && res.path) || '';
+    const snap = pendingWrites.get(path) || null;
+    if (snap && snap.timer) clearTimeout(snap.timer);
+    pendingWrites.delete(path);
+    const item = path ? state.files.find(f => f.fullPath === path) : null;
+
     if (!res || !res.ok) {
-      dirty = true;
-      pendingWrite = null;
-      setSaveState('unsaved');
-      DV.toast(DV.t('写入失败') + '：' + ((res && res.error) || '?'), 'err', 4200);
-      DV.Log.error('写入失败：' + JSON.stringify(res));
+      // B11：文件在外部被改过 —— 不能盲目覆盖，也不能把用户的改动丢掉。
+      // 把快照留在内存里（item.text），给出三个出口让用户自己选。
+      if (item && snap) {
+        item.text = snap.text;
+        if (item.kind === 'rtf' && !isPlainView(item)) { item.rawSrc = snap.text; renderFile(item); }
+        item.lines = countLines(item.text);
+        item.chars = item.text.length;
+      }
+      if (item) item.unsaved = true;
+      if (!item || active() === item) dirty = true;
+      refreshSaveState();
+      if (res && res.changedOnDisk) {
+        DV.Log.warn('文件在磁盘上被改过：' + path);
+        askChangedOnDisk(item, snap);
+      } else {
+        DV.toast(DV.t('写入失败') + '：' + writeErrText((res && res.error) || '?'), 'err', 4200);
+        DV.Log.error('写入失败：' + JSON.stringify(res));
+      }
       return;
     }
-    clearTimeout(saveTimeoutTimer);
-    const item = state.files.find(f => f.fullPath === res.path);
-    const snap = (pendingWrite && pendingWrite.path === res.path) ? pendingWrite : null;
-    pendingWrite = null;
     if (item) {
       /* 只用写回时的快照更新数据，绝不从 els.doc 回读：
          回包是异步的，那时 els.doc 可能是另一个文件的正文（A#2）。 */
@@ -1411,16 +1536,75 @@ window.DV = window.DV || {};
       if (res.encoding && !bytePassthrough) item.encoding = displayEncName(res.encoding);
       item.lines = countLines(item.text);
       item.chars = item.text.length;
+      item.unsaved = false;
       syncRowClasses();
       saveSession();
     }
-    // 写回的是当前打开的这个文件时才算「干净」
-    if (!snap || !active() || active().fullPath === res.path) dirty = false;
-    // A24：只更新与当前文件相关的状态，别把另一个文件的"未保存"错误地刷成"已保存"
-    if (!active() || active().fullPath === res.path) setSaveState('saved');
-    else refreshSaveState();
+    // 写回的是当前打开的这个文件时才算「干净」。
+    // 关键：只有「回包对应的那一版」仍然是最后一版（rev 没变）才清脏 ——
+    // 否则用户在这期间又打了字，会被这个回包错误地标成已保存。
+    if (item && active() === item && (!snap || snap.rev === dirtyRev)) dirty = false;
+    // 不在这里重绘：编辑时重绘会丢光标。内存里的条目在 saveEdit 里就已经
+    // 换成「用户看到的内容」，所以之后任何一次重绘用的都是新内容（C24/P1-15）。
+    refreshSaveState();       // A24：另一个文件的「未保存」不会被刷成「已保存」
     DV.Log.ok('已写回源文件：' + res.path);
   };
+
+  /**
+   * B11：文件在磁盘上被改过时的三选一。
+   * 「仍然覆盖」重发一次带 force 的写回；「重新加载」丢弃内存里的改动读回磁盘版本。
+   */
+  function askChangedOnDisk(item, snap) {
+    const text = DV.t('这个文件在磁盘上被改过了，直接写回会覆盖别人的改动。');
+    DV.choose({
+      title: DV.t('文件已在外部被修改'),
+      text: text,
+      options: [
+        { id: 'reload', label: DV.t('重新加载磁盘版本'), kind: 'ghost' },
+        { id: 'cancel', label: DV.t('取消'), kind: '' },
+        { id: 'overwrite', label: DV.t('仍然覆盖'), kind: 'primary' },
+      ],
+    }).then(function (pick) {
+      if (pick === 'overwrite') {
+        forceSave(item, snap);
+        return;
+      }
+      if (pick === 'reload') reloadFromDisk(item, snap);
+    });
+  }
+
+  /**
+   * 放弃内存里的改动，重新从磁盘读一份。
+   * 先让原生重新登记（刷新哈希基线），再走一次普通的打开流程。
+   */
+  function reloadFromDisk(item, snap) {
+    if (!item || !item.fullPath) return;
+    if (snap) pendingWrites.delete(item.fullPath);
+    item.unsaved = false;
+    if (active() === item) dirty = false;
+    try {
+      nativeBridge().postMessage({ action: 'allowFiles', paths: [item.fullPath] });
+    } catch (e) { /* 忽略 */ }
+    fetchWithTimeout(DV.localUrl(item.fullPath), 8000).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      const dec = decodeBuffer(buf, '');
+      item.text = dec.text;
+      item.encoding = dec.encoding;
+      item.bytes = buf.byteLength;
+      if (item.kind === 'rtf') item.rawBytes = new Uint8Array(buf);
+      item.lines = countLines(dec.text);
+      item.chars = dec.text.length;
+      renderFile(item);
+      if (active() === item) paintDoc(item, { keepScroll: true });
+      refreshSaveState();
+      DV.toast(DV.t('已重新载入磁盘上的版本'), '', 2200);
+      DV.Log.info('已重新载入磁盘版本：' + item.fullPath);
+    }, function (e) {
+      DV.toast(DV.t('重新加载失败') + '：' + ((e && e.message) || e), 'err', 3600);
+    });
+  }
 
   function closePanes() {
     try { if (DV.SettingsUI && DV.SettingsUI.isOpen && DV.SettingsUI.isOpen()) DV.SettingsUI.hide(); } catch (e) { }
@@ -1429,6 +1613,7 @@ window.DV = window.DV || {};
 
   /** 原地回到"第一次打开"：清数据 + 复位设置 + 清空列表 + 重新放内置 README（不依赖 reload） */
   function resetToFirstRun() {
+    flushEdits();                       // P1-14：复位前先把改动写回去
     try { DV.Settings.wipeStorage(); } catch (e) { /* 忽略 */ }
     DV.Settings.toDefaults();
     state.files.length = 0;
@@ -1601,6 +1786,8 @@ window.__DV_NATIVE_FILES = function (paths) {
         item.bytes = buf.byteLength;
         if (item.kind === 'rtf') item.rawBytes = new Uint8Array(buf);   // P0-6：前言按原始字节写回
         item.size = buf.byteLength;
+        // P1-17：原生投递这条路径以前根本没设 item.big，超大文件照样跑全文统计。
+        // 注意这不是「大小限制」——文件照常导入、照常显示，只是跳过全文统计。
         item.big = buf.byteLength > BIG_BYTES;
         item.lines = item.big ? 0 : countLines(dec.text);
         item.chars = dec.text.length;
@@ -1806,6 +1993,7 @@ window.__DV_NATIVE_FILES = function (paths) {
     $('#btnClear').addEventListener('click', () => {
       if (!state.files.length) return;
       if (!confirm('清空当前打开的全部文件？')) return;
+      flushEdits();                     // P1-14：清空列表前先把改动写回去
       state.files = []; state.activeId = null;
       refreshList(); showWelcome(); saveSession();
       DV.Log.info('已清空文件列表');
@@ -1854,7 +2042,11 @@ window.__DV_NATIVE_FILES = function (paths) {
         const it2 = active();
         if (it2) paintDoc(it2);
       }
-      if (keys && keys.indexOf('editMode') >= 0) { wantFocus = editable(); applyEditMode(); }
+      if (keys && keys.indexOf('editMode') >= 0) {
+        flushEdits();                        // P1-14：关掉编辑开关前先落盘，别丢改动
+        wantFocus = editable();
+        applyEditMode();
+      }
       if (keys && keys.indexOf('lang') >= 0) { /* 文案由 rebuildForLang 处理 */ }
       if (keys && keys.indexOf('lang') >= 0 && DV.SettingsUI.rebuildForLang) {
         DV.SettingsUI.rebuildForLang();     // 主题名/字体名/分段按钮等 JS 生成的文案要重画
@@ -1870,8 +2062,9 @@ window.__DV_NATIVE_FILES = function (paths) {
       if (!keys || keys.indexOf('rtfSoftWrap') < 0) return;
       const it = active();
       if (it && it.kind === 'rtf') {
+        flushEdits();               // C24：先落盘，paintDoc 才不会拿旧 item.text 重画
         renderFile(it);
-        paintDoc(it);
+        paintDoc(it, { keepScroll: true });
         DV.Log.info('按源换行：' + (cfg.rtfSoftWrap ? '开' : '关') + '，已重新解析 ' + it.name);
       }
     });
@@ -1942,6 +2135,12 @@ window.__DV_NATIVE_FILES = function (paths) {
     /* 搜索框只负责输入；上一处/下一处用旁边的 ↑ ↓ 按钮 */
     $('#btnSearchNext').addEventListener('click', () => stepMatch(1));
     $('#btnSearchPrev').addEventListener('click', () => stepMatch(-1));
+
+    /* P1-14：关窗口 / 刷新前把没落盘的改动交出去。
+       只做一次静默写回，不弹确认框打断用户。 */
+    window.addEventListener('beforeunload', function () {
+      try { flushEdits(); } catch (e) { /* 忽略 */ }
+    });
 
     /* 快捷键：只保留 F3。
        之前的无修饰键（N 上一个/下一个文件等）在 contenteditable 里也会触发，
@@ -2225,6 +2424,7 @@ window.__DV_NATIVE_FILES = function (paths) {
     diag: () => { const it = active(); return it ? DV.Debug.emitReport(it) : ''; },
     seedWelcome, resetToFirstRun, applyEditMode, saveEdit, canEdit, isPlainView, domToText,
     renderFile, restoreSession, saveSession, renderMerged, registerNativePaths,
-    hasUnmodeledRtf, writeAsPlain,
+    hasUnmodeledRtf, writeAsPlain, flushEdits, forceSave, reloadFromDisk, writeErrText,
+    pendingWrites, dirtyRev: () => dirtyRev,
     version: APP_VERSION, decodeBuffer, makeHexDecoder, detectRtfCodepage };
 })();

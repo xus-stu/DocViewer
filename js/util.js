@@ -173,6 +173,44 @@ DV.toast = function (msg, type, ttl) {
   setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 240); }, ttl || 2600);
 };
 
+/* ---------------- 多选一对话框（Promise） ----------------
+   需要用户明确选一条路时用（例如「文件在磁盘上被改过」的三选一），
+   不依赖原生 window.confirm（它只能表达两个选项）。
+   opts: { title, text, options: [{id,label,kind}] } → resolve(id)  */
+DV.choose = function (opts) {
+  opts = opts || {};
+  const options = opts.options || [];
+  return new Promise(function (resolve) {
+    let box = DV.$('#dvChoose');
+    if (box && box.parentNode) box.parentNode.removeChild(box);
+    const overlay = DV.el('div', { class: 'dv-choose', id: 'dvChoose' });
+    const card = DV.el('div', { class: 'dv-choose-card' });
+    if (opts.title) card.appendChild(DV.el('div', { class: 'dv-choose-title', text: opts.title }));
+    if (opts.text) card.appendChild(DV.el('div', { class: 'dv-choose-text', text: opts.text }));
+    const row = DV.el('div', { class: 'dv-choose-actions' });
+    let settled = false;
+    const done = function (v) {
+      if (settled) return;
+      settled = true;
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(v);
+    };
+    options.forEach(function (o) {
+      const b = DV.el('button', { class: 'btn' + (o.kind ? ' ' + o.kind : ''), text: o.label });
+      b.addEventListener('click', function () { done(o.id); });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); done((options[options.length - 1] || {}).id); }
+    }
+    document.addEventListener('keydown', onKey, true);
+  });
+};
+
 /* ---------------- 日志（调试面板 + 控制台） ---------------- */
 DV.Log = (function () {
   const MAX = 500;

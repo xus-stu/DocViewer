@@ -451,6 +451,13 @@ DV.i18n = (function () {
     "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容，写回会丢掉它们，已阻止保存": "This RTF contains images, headers/footers or footnotes that the reader does not model; writing back would delete them, so the save was blocked",
     "这份 RTF 含图片 / 页眉页脚 / 脚注等未支持的内容（{x}），写回会丢掉它们，已阻止保存": "This RTF contains content the reader does not model ({x}); writing back would delete it, so the save was blocked",
     "写回没有收到确认，改动仍标记为未保存": "The write was not confirmed; the change is still marked unsaved",
+    /* ---- 文件在外部被改过：三选一 ---- */
+    "文件已在外部被修改": "The file changed on disk",
+    "这个文件在磁盘上被改过了，直接写回会覆盖别人的改动。": "This file changed on disk since it was opened. Writing back now would overwrite those changes.",
+    "重新加载磁盘版本": "Reload from disk",
+    "仍然覆盖": "Overwrite anyway",
+    "已重新载入磁盘上的版本": "Reloaded the version on disk",
+    "重新加载失败": "Reload failed",
     "文件超过 {mb} MB，已跳过（避免卡死）": "File is larger than {mb} MB and was skipped to avoid freezing",
     "请至少输入 2 个字符": "Type at least 2 characters",
     "拖放读取失败，请改用「打开文件」": "Could not read the dropped items; use “Open files” instead",

@@ -11,8 +11,30 @@ import WebKit
 /// 并记住打开时的 mtime 与大小，用于发现外部改动。
 final class OpenedFiles {
     static let shared = OpenedFiles()
-    private var stamp: [String: (mtime: Date, size: Int)] = [:]
+
+    struct Stamp { let mtime: Date; let size: Int; let hash: UInt64? }
+    /// 内容哈希只在文件不超过这个大小的时候算：大文件每次打开都读一遍太贵，
+    /// 这类文件退回 mtime+size 判断（够用，最坏情况是 touch 造成的假警报）。
+    static let hashLimit = 8 * 1024 * 1024
+
+    private var stamp: [String: Stamp] = [:]
     private let lock = NSLock()
+
+    /// FNV-1a：只需要"内容变没变"，不需要密码学强度，也不引入 CryptoKit 依赖
+    static func contentHash(_ path: String) -> UInt64? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        var h: UInt64 = 0xcbf29ce484222325
+        while true {
+            let chunk = fh.readData(ofLength: 1 << 16)
+            if chunk.isEmpty { break }
+            for b in chunk {
+                h ^= UInt64(b)
+                h = h &* 0x100000001b3
+            }
+        }
+        return h
+    }
 
     func allow(_ path: String) {
         let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
@@ -21,22 +43,29 @@ final class OpenedFiles {
         let attrs = try? FileManager.default.attributesOfItem(atPath: key)
         let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
         let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-        lock.lock(); stamp[key] = (mtime, size); lock.unlock()
+        let hash = size <= OpenedFiles.hashLimit ? OpenedFiles.contentHash(key) : nil
+        lock.lock(); stamp[key] = Stamp(mtime: mtime, size: size, hash: hash); lock.unlock()
     }
     func allows(_ path: String) -> Bool {
         let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         lock.lock(); defer { lock.unlock() }
         return stamp[key] != nil
     }
-    /// 与打开时相比是否被外部改过
+    /// 与打开时相比是否被外部改过。
+    /// - size 不同 → 一定改了
+    /// - size 相同但内容哈希不同 → 改了（同 mtime 的真改动也跑不掉）
+    /// - 有哈希时只看哈希：`touch` 一下 mtime 变了但内容没变 → 不再误报
     func changedExternally(_ path: String) -> Bool {
         let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         lock.lock(); let old = stamp[key]; lock.unlock()
         guard let old = old else { return false }
         let attrs = try? FileManager.default.attributesOfItem(atPath: key)
-        let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
-        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-        return mtime != old.mtime || size != old.size
+        guard let attrs = attrs else { return true }                 // 文件没了
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        if size != old.size { return true }
+        if let oh = old.hash, let nh = OpenedFiles.contentHash(key) { return nh != oh }
+        let mtime = (attrs[.modificationDate] as? Date) ?? Date.distantPast
+        return mtime != old.mtime
     }
     func touch(_ path: String) { allow(path) }
 }
@@ -387,9 +416,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     // MARK: 写回源文件（整文件替换）
-    /// body: { path, text, encoding }
+    /// body: { path, text, encoding, force? }
     /// text 是新的完整文件内容（RTF 已由前端按原 preamble + 重新序列化的正文拼好）。
     /// 首次写入前生成 .bak 备份。
+    ///
+    /// 所有写入都排在同一条串行队列上：以前「检查磁盘是否被改过」在主线程、
+    /// 真正写盘在并发队列上，两次写回会交错；现在检查与写入在同一个临界区里。
+    private let writeQueue = DispatchQueue(label: "com.docviewer.write")
+
     private func handleWriteFile(_ body: [String: Any]) {
         guard let path = body["path"] as? String, !path.isEmpty else {
             replyWrite(false, error: "missing path", path: ""); return
@@ -399,16 +433,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             replyWrite(false, error: "missing text", path: path); return
         }
         let encName = (body["encoding"] as? String) ?? "utf-8"
+        let force = (body["force"] as? Bool) ?? false
         // B6：只允许写回本次打开过的文件（防止页面里的任意脚本覆写本机文件）
         guard OpenedFiles.shared.allows(path) else {
             replyWrite(false, error: "refused: file was not opened by this app", path: path); return
         }
-        // B12：文件在外部被改过就不盲目覆盖
-        guard !OpenedFiles.shared.changedExternally(path) else {
-            replyWrite(false, error: "changed on disk", path: path); return
-        }
         // B21：写盘挪到后台队列，别卡住主线程（大文件尤其明显）
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        writeQueue.async { [weak self] in
+            // B12：文件在外部被改过就不盲目覆盖；force 是用户在界面上明确选了「仍然覆盖」
+            if !force && OpenedFiles.shared.changedExternally(path) {
+                NSLog("DocViewer: 文件已被外部改动，拒绝覆盖 %@", path)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.replyWrite(false, error: "changed on disk", path: path, changedOnDisk: true)
+                }
+                return
+            }
             do {
                 let out = try FileWriter.writeText(path: path, text: text, encoding: encName)
                 OpenedFiles.shared.touch(path)
@@ -426,9 +466,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func replyWrite(_ ok: Bool, error: String?, path: String,
-                            encoding: String? = nil, bytes: Int? = nil) {
+                            encoding: String? = nil, bytes: Int? = nil,
+                            changedOnDisk: Bool = false) {
         var obj: [String: Any] = ["ok": ok, "path": path]
         if let e = error { obj["error"] = e }
+        if changedOnDisk { obj["changedOnDisk"] = true }
         if let enc = encoding { obj["encoding"] = enc }     // A19：真实编码
         if let n = bytes { obj["bytes"] = n }               // A19：真实字节数
         guard let data = try? JSONSerialization.data(withJSONObject: obj),

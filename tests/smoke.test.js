@@ -114,6 +114,9 @@ class Node2 {
   getAttribute(k) { return k === 'class' ? this.className : (this.attrs[k] == null ? null : this.attrs[k]); }
   removeAttribute(k) { delete this.attrs[k]; }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  removeEventListener(type, fn) {
+    if (this.listeners[type]) this.listeners[type] = this.listeners[type].filter(f => f !== fn);
+  }
   dispatch(type, ev) {
     ev = ev || {};
     ev.type = type;
@@ -321,6 +324,10 @@ const documentObj = {
   querySelectorAll: sel => querySelectorAll(documentEl, sel),
   getElementsByTagName: t => collect(documentEl, t),
   addEventListener(type, fn) { (listeners['doc:' + type] = listeners['doc:' + type] || []).push(fn); },
+  removeEventListener(type, fn) {
+    const k = 'doc:' + type;
+    if (listeners[k]) listeners[k] = listeners[k].filter(f => f !== fn);
+  },
   createTreeWalker(root, what) {
     const nodes = collect(root, '*').filter(n => n.tag === '#TEXT').concat(
       (function allText(n, acc) { n.children.forEach(c => { if (c.tag === '#TEXT') acc.push(c); else allText(c, acc); }); return acc; })(root, []));
@@ -1171,6 +1178,200 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
         App.closeFile(it.id);
       }
     }
+  }
+
+  /* --- 场景 7c-11：P1 存不下去 / 存不回来 --- */
+  {
+    // 这一段会清空列表、复位设置，做完必须原样还原，后面的场景还要用这些文件
+    const p1KeepFiles = App.state.files.slice();
+    const p1KeepActive = App.state.activeId;
+    const p1KeepCfg = JSON.parse(JSON.stringify(DV.Settings.get()));
+    const p1KeepSession = localStorageData['docviewer.session'];
+    const p1Restore = () => {
+      App.state.files.length = 0;
+      p1KeepFiles.forEach(f => App.state.files.push(f));
+      DV.Settings.set(p1KeepCfg);
+      if (p1KeepSession === undefined) delete localStorageData['docviewer.session'];
+      else localStorageData['docviewer.session'] = p1KeepSession;
+      if (p1KeepActive) App.select(p1KeepActive);
+      App.refreshList();
+    };
+    const mk = (name, text, kind) => ({
+      id: 'p1-' + name, name: name, path: '', size: text.length,
+      kind: kind || DV.kindOf(name), text: text, bytes: text.length,
+      file: { name: name, size: text.length, webkitRelativePath: '',
+              arrayBuffer: async () => new TextEncoder().encode(text).buffer },
+    });
+    const tick = () => new Promise(r => setImmediate(r));
+
+    // ---- P1-11：文件在外部被改过 → 三选一，而不是死局 ----
+    {
+      await App.ingest([mk('外部改动.txt', '第一行\n')], { showProgress: false });
+      const it = App.state.files.find(f => f.name === '外部改动.txt');
+      it.fullPath = '/tmp/docviewer-p1-11.txt';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id); App.applyEditMode();
+      App.els.doc.textContent = '改过的内容\n';
+      App.els.doc.dispatch('input', {});
+      ok(App.manualSave() === true, 'P1-11：写回已发出');
+      ok(it.unsaved === true, 'P1-11：回包前条目仍是「未保存」（脏标记没有提前清）');
+
+      windowObj.__DV_WRITE_RESULT({ ok: false, path: it.fullPath, error: 'changed on disk', changedOnDisk: true });
+      const modal = documentObj.querySelector('#dvChoose');
+      ok(!!modal, 'P1-11：弹出三选一对话框而不是只弹个 toast');
+      const btns = documentObj.querySelectorAll('.dv-choose-actions .btn');
+      ok(btns.length === 3, 'P1-11：三个选项', 'n=' + btns.length);
+      ok(it.text.indexOf('改过的内容') >= 0, 'P1-11：写回失败时改动仍留在内存里，没有丢');
+
+      // 「仍然覆盖」→ 再发一次带 force 的写回
+      sent.length = 0;
+      const overwrite = btns.find(b => b.textContent === DV.t('仍然覆盖'));
+      ok(!!overwrite, 'P1-11：有「仍然覆盖」按钮');
+      overwrite.dispatch('click', {});
+      await tick();
+      const forced = sent.filter(m => m.action === 'writeFile')[0] || {};
+      ok(forced.force === true, 'P1-11：「仍然覆盖」带上了 force 标志');
+      ok(String(forced.text).indexOf('改过的内容') >= 0, 'P1-11：覆盖的是用户改过的内容');
+
+      // 「重新加载磁盘版本」→ 从磁盘读回并丢弃内存改动
+      sent.length = 0;
+      App.els.doc.dispatch('input', {});
+      App.manualSave();
+      windowObj.__DV_WRITE_RESULT({ ok: false, path: it.fullPath, error: 'changed on disk', changedOnDisk: true });
+      await tick();
+      const diskBytes = new TextEncoder().encode('磁盘上的版本\n');
+      sandbox.fetch = () => Promise.resolve({
+        ok: true, status: 200,
+        arrayBuffer: async () => diskBytes.buffer.slice(0),
+      });
+      const reload = documentObj.querySelectorAll('.dv-choose-actions .btn')
+        .find(b => b.textContent === DV.t('重新加载磁盘版本'));
+      ok(!!reload, 'P1-11：有「重新加载磁盘版本」按钮');
+      reload.dispatch('click', {});
+      await tick(); await tick(); await tick();
+      ok(it.text.indexOf('磁盘上的版本') >= 0, 'P1-11：重新加载后条目换成磁盘内容',
+         JSON.stringify(String(it.text).slice(0, 40)));
+      ok(it.unsaved !== true, 'P1-11：重新加载后不再是「未保存」');
+      delete sandbox.fetch;
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+      App.closeFile(it.id);
+    }
+
+    // ---- P1-13：写回失败 / 超时不能把脏标记吃掉 ----
+    {
+      await App.ingest([mk('失败重试.txt', '原文\n')], { showProgress: false });
+      const it = App.state.files.find(f => f.name === '失败重试.txt');
+      it.fullPath = '/tmp/docviewer-p1-13.txt';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id); App.applyEditMode();
+      App.els.doc.textContent = '新内容\n';
+      App.els.doc.dispatch('input', {});
+      App.manualSave();
+      windowObj.__DV_WRITE_RESULT({ ok: false, path: it.fullPath, error: 'file is read-only' });
+      ok(it.unsaved === true, 'P1-13：失败的写回把条目标成未保存');
+      ok(App.els.saveState.textContent === DV.t('未保存'), 'P1-13：状态栏显示未保存');
+      ok(App.manualSave() === true, 'P1-13：失败之后还能再保存一次（不会变成哑巴）');
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+      App.closeFile(it.id);
+    }
+
+    // ---- P1-14：清空列表 / 复位 / 关窗口之前要 flush ----
+    {
+      await App.ingest([mk('清空前.txt', '即将清空\n')], { showProgress: false });
+      const it = App.state.files.find(f => f.name === '清空前.txt');
+      it.fullPath = '/tmp/docviewer-p1-14.txt';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id); App.applyEditMode();
+      App.els.doc.textContent = '改过的清空内容\n';
+      App.els.doc.dispatch('input', {});
+      sent.length = 0;
+      documentObj.getElementById('btnClear').dispatch('click', {});
+      ok(sent.filter(m => m.action === 'writeFile').length === 1,
+         'P1-14：清空列表前先把改动写回去', 'writes=' + sent.length);
+      ok(App.state.files.length === 0, 'P1-14：列表确实被清空了');
+
+      ok((windowObj.listeners['beforeunload'] || []).length > 0, 'P1-14：注册了 beforeunload 兜底');
+
+      // 复位前也要 flush
+      await App.ingest([mk('复位前.txt', '即将复位\n')], { showProgress: false });
+      const it2 = App.state.files.find(f => f.name === '复位前.txt');
+      it2.fullPath = '/tmp/docviewer-p1-14b.txt';
+      App.select(it2.id); App.applyEditMode();
+      App.els.doc.textContent = '改过的复位内容\n';
+      App.els.doc.dispatch('input', {});
+      sent.length = 0;
+      App.resetToFirstRun();
+      ok(sent.filter(m => m.action === 'writeFile').length === 1,
+         'P1-14：复位前先把改动写回去', 'writes=' + sent.length);
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+    }
+
+    // ---- P1-16：损坏会话里的非法 kind 不能把启动打断 ----
+    {
+      const bad = { id: 'bad-kind', name: '坏.xyz', path: '', kind: 'nonsense-kind',
+                    text: '正文', bytes: 6, html: '<p>正文</p>' };
+      App.state.files.push(bad);
+      let threw = null;
+      try { App.paintDoc(bad); } catch (e) { threw = e; }
+      ok(!threw, 'P1-16：非法 kind 不会抛 TypeError', threw && threw.message);
+      App.state.files = App.state.files.filter(f => f.id !== 'bad-kind');
+    }
+
+    // ---- P1-17：原生投递也要设 item.big（大文件跳过全文统计，但不限制导入）----
+    {
+      const big = new Uint8Array(6 * 1024 * 1024 + 32);
+      big.fill(0x41);
+      sandbox.fetch = () => Promise.resolve({
+        ok: true, status: 200, arrayBuffer: async () => big.buffer.slice(0),
+      });
+      sandbox.window.__DV_NATIVE_FILES(['/tmp/docviewer-p1-17.txt']);
+      await tick(); await tick(); await tick();
+      const it = App.state.files.find(f => f.name === 'docviewer-p1-17.txt');
+      ok(!!it, 'P1-17：大文件照样导入（不做大小限制）');
+      ok(it && it.big === true, 'P1-17：大文件被标记为 big');
+      ok(it && it.lines === 0, 'P1-17：大文件跳过全文行数统计');
+      delete sandbox.fetch;
+      if (it) App.closeFile(it.id);
+    }
+
+    // ---- C24 / P1-15：写回后内存里的条目立刻是新内容，重绘不会回退 ----
+    {
+      await App.ingest([mk('重绘.txt', '旧内容\n')], { showProgress: false });
+      const it = App.state.files.find(f => f.name === '重绘.txt');
+      it.fullPath = '/tmp/docviewer-p1-15.txt';
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: () => { } } } };
+      DV.Settings.set({ editMode: 'rw' });
+      App.select(it.id); App.applyEditMode();
+      App.els.doc.textContent = '新内容\n';
+      App.els.doc.dispatch('input', {});
+      App.manualSave();
+      ok(it.text.indexOf('新内容') >= 0,
+         'C24：写回发出的同时 item.text 就已经是新内容（重绘不会回退）',
+         JSON.stringify(String(it.text)));
+      delete windowObj.webkit;
+      DV.Settings.set({ editMode: 'ro' });
+      App.closeFile(it.id);
+    }
+
+    // ---- C26：原生的英文错误串要能本地化 ----
+    {
+      ok(App.writeErrText('file is read-only') === '文件是只读的', 'C26：只读错误已本地化',
+         App.writeErrText('file is read-only'));
+      ok(/编码写入失败/.test(App.writeErrText('encode failed: latin1')), 'C26：编码失败已本地化',
+         App.writeErrText('encode failed: latin1'));
+      ok(App.writeErrText('something else') === 'something else', 'C26：认不出来的原样显示');
+    }
+
+    p1Restore();
   }
 
   /* --- 场景 7d：帧率采样（不受 rAF 限制）--- */
