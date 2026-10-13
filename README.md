@@ -213,8 +213,8 @@ tests/                  Node test suites and the native writer test
 ## Tests
 
 ```bash
-node tests/parse.test.js      # parser            (81 assertions)
-node tests/smoke.test.js      # whole app         (407 assertions)
+node tests/parse.test.js      # parser            (109 assertions)
+node tests/smoke.test.js      # whole app         (467 assertions)
 
 # everything at once (parser + app + native writer)
 bash tests/run-all.sh
@@ -249,6 +249,27 @@ preservation.
 - Markdown lists are parsed into a tree before rendering, which avoids invalid nesting from
   string post-processing.
 
+## Write-back safety
+
+Editing only rewrites the body text, and these cases are blocked or protected:
+
+| Case | Behaviour |
+|------|-----------|
+| The file has images, headers/footers, footnotes or fields (skipped by the parser, never in the DOM) | **Blocked by default**, with a list of what would be lost; you can still pick "save anyway (loses content)" |
+| The new content is empty but the file was not | The native writer **refuses** (no truncating a file to zero bytes) |
+| A backup cannot be written (permissions, `.bak` taken by a directory) | **Write is aborted**, never an unbacked overwrite |
+| Non-UTF-8 files (GBK / Big5 / UTF-16 / cp1252) | Written back in the **original** encoding; an unknown encoding name is an error, never a silent fallback to UTF-8 |
+| Raw bytes in the RTF preamble | Passed through byte for byte, an `\ansicpg936` file is never re-encoded as UTF-8 |
+| The file changed on disk after it was opened | Content hash is compared, so it is not blindly overwritten; you get "reload from disk / cancel / overwrite anyway" |
+| A UTF-8 or UTF-16 BOM | Preserved - the first save no longer strips it |
+| A file with hard links | Written in place so every link name sees the new content (the inode is not replaced) |
+| Extended attributes (e.g. `kMDItemWhereFroms`) | Copied over after the atomic replace |
+| The target path is a symlink | Resolved first, the link is not replaced by a regular file |
+| Unsaved edits while re-rendering / closing / clearing the list / resetting / closing the window | Flushed first |
+
+Two backups are kept: `.bak` is the original version from before the **first** write (written
+once), `.bak.prev` is the previous version of every subsequent write.
+
 ## Known limitations
 
 - RTF covers the common subset produced by TextEdit, WordPad and Word. Fields, footnotes,
@@ -256,8 +277,9 @@ preservation.
 - RTF tables only restore basic rows and columns; border styles and merged cells are ignored.
 - The Markdown renderer is deliberately small and does not resolve reference-style link
   definitions or math.
-- Persistence keeps up to 400 KB per file and 4 MB per session; anything beyond that stays in
-  memory only.
+- Session memory keeps up to 8 MB per file and 64 MB per session; anything beyond that stays
+  in memory only (it only affects "remember session" - opening and editing are unaffected).
+  There is no limit on how many files you import or how large they are.
 - The macOS app is ad-hoc signed, so Gatekeeper warns on first launch. Right-click and choose
   Open, or run `xattr -dr com.apple.quarantine`.
 
