@@ -478,6 +478,24 @@ console.log('\n== 协议白名单 ==');
         ok(/color:#c03030/.test(ri.html), 'DOCX：显式颜色仍然保留');
       }
 
+      // 2c) 「标题 1」被当排版工具用在整段正文上时，不能排成巨型标题
+      {
+        const longText = '1. To protect your personal information in digital life, you had better '
+          + 'not share your passwords with anyone online, or you will lose them.';
+        const bodyDoc = '<w:document ' + W + '><w:body>'
+          + '<w:p><w:pPr><w:pStyle w:val="标题 1"/></w:pPr><w:r><w:t>短标题</w:t></w:r></w:p>'
+          + '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>' + longText + '</w:t></w:r></w:p>'
+          + '<w:p><w:pPr><w:pStyle w:val="标题 2"/></w:pPr><w:r><w:t>Why learn languages?</w:t></w:r></w:p>'
+          + '</w:body></w:document>';
+        const rz = await DV.office.renderDocx(makeZip([
+          { name: 'word/document.xml', data: bodyDoc, deflate: true },
+        ]));
+        ok(rz.html.indexOf('<h1>短标题</h1>') >= 0, 'DOCX：真正的短标题仍排成 h1', rz.html);
+        ok(rz.html.indexOf(longText) >= 0 && rz.html.indexOf('<h1>' + longText) < 0,
+           'DOCX：一百多字的「标题 1」按正文排（不会突然变大）', rz.html.slice(0, 240));
+        ok(rz.html.indexOf('<h2>Why learn languages?</h2>') >= 0, 'DOCX：短标题 2 仍是 h2');
+      }
+
       // 3) Pages：取文件里内嵌的预览图
       const jpg = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
       const pagesZip = makeZip([

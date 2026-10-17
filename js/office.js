@@ -237,15 +237,37 @@ window.DV = window.DV || {};
 
   const HEADING_RE = /^(?:heading|标题)\s*([1-6])$/i;
 
+  /** 一个节点下面的纯文本（用来判断这段到底像不像标题） */
+  function textOf(node) {
+    let s = '';
+    (function walk(n) {
+      if (n.name === 'w:t') s += n.text;
+      else if (n.name === 'w:tab') s += ' ';
+      n.children.forEach(walk);
+    })(node);
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  /** 长过这个字数的「标题」一律当正文：一段一百多字的句子不可能是标题 */
+  const HEADING_MAX_CHARS = 60;
+
   function headingLevel(p) {
     const pPr = child(p, 'w:pPr');
     const style = child(pPr, 'w:pStyle');
     const val = style && style.attrs['w:val'];
     if (!val) return 0;
-    if (/^title$/i.test(val) || /^标题$/.test(val)) return 1;
-    const m = HEADING_RE.exec(val);
-    if (m) return parseInt(m[1], 10);
-    return 0;
+    let lvl = 0;
+    if (/^title$/i.test(val) || /^标题$/.test(val)) lvl = 1;
+    else {
+      const m = HEADING_RE.exec(val);
+      if (m) lvl = parseInt(m[1], 10);
+    }
+    if (!lvl) return 0;
+    // Word 里「标题 1」常常被当成排版工具用在整段正文上 —— 试卷、讲义尤其常见。
+    // 照着 h1 排会把整页撑得大小不一，所以长段落一律按正文处理。
+    const t = textOf(p);
+    if (!t || t.length > HEADING_MAX_CHARS) return 0;
+    return lvl;
   }
 
   /** 渲染上下文：图片关系表、媒体数据、是否沿用文档自带字体 */

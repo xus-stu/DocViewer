@@ -1303,6 +1303,13 @@ body[data-edit="on"] .doc { cursor: text; }
 /* Pages 的内嵌预览图是整页位图 */
 .pages-preview .docview-img, .ql-preview .docview-img { cursor: default; background: #fff; }
 
+/* Word 的标题别照搬正文那套 1.72em：Word 文档里「标题 1」经常被当排版工具用，
+   层级保留、幅度收小，整篇看起来才是一致的字号 */
+.docx-body h1 { font-size: 1.3em; border-bottom: 0; padding-bottom: 0; }
+.docx-body h2 { font-size: 1.16em; border-bottom: 0; padding-bottom: 0; }
+.docx-body h3 { font-size: 1.08em; }
+.docx-body h4, .docx-body h5, .docx-body h6 { font-size: 1em; }
+
 /* Word 里内嵌的图片 */
 .docx-img {
   max-width: 100%; height: auto;

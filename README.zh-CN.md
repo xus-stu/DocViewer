@@ -192,7 +192,7 @@ tests/                  Node 测试与原生写回测试
 ## 测试
 
 ```bash
-node tests/parse.test.js      # 解析器（141 项）
+node tests/parse.test.js      # 解析器（144 项）
 node tests/smoke.test.js      # 整个应用（517 项）
 
 # 原生写回测试，需要真实文件
@@ -245,6 +245,8 @@ cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
 - RTF 表格只做基础的行列还原，不解析边框样式与合并单元格
 - Markdown 渲染器刻意做得很小，不解析引用式链接定义与数学公式
 - Word 预览不显示脚注、页眉页脚与修订标记；表格只还原行列与合并列；图片只认 PNG / JPEG / GIF / BMP / WebP / TIFF / SVG，Word 里的 EMF/WMF 矢量图会被跳过
+- Word 里「标题」样式被拿来排版整段正文的情况很常见（试卷、讲义），所以超过 60 字的「标题」一律按正文排，
+  真正的短标题仍然有层级；Word 的标题幅度也收小到 1.3em 左右，不让整篇字号忽大忽小
 - Word 文档里「跟随主题」的文字颜色（`w:themeColor`）会被忽略；其它颜色如果与阅读背景对比度低于 3:1，也会改用阅读器配色，免得深色主题下看不见
 - Pages 预览是系统生成的整页位图，文字不可选中（Pages 的正文是 protobuf，没法直接解析）
 - Word 解析要用浏览器的 `DecompressionStream`（macOS 13.3+）；老系统上自动退回 Quick Look 预览图

@@ -224,7 +224,7 @@ tests/                  Node test suites and the native writer test
 ## Tests
 
 ```bash
-node tests/parse.test.js      # parser            (141 assertions)
+node tests/parse.test.js      # parser            (144 assertions)
 node tests/smoke.test.js      # whole app         (517 assertions)
 
 # everything at once (parser + app + native writer)
@@ -291,6 +291,10 @@ once), `.bak.prev` is the previous version of every subsequent write.
 - The Word preview does not show footnotes, headers/footers or revision marks; tables only
   restore rows, columns and column spans; images are limited to PNG / JPEG / GIF / BMP /
   WebP / TIFF / SVG (EMF/WMF vector images inside Word are skipped).
+- Word "Heading" styles are often used as plain formatting in exam papers and handouts, so
+  a "heading" paragraph longer than 60 characters is laid out as body text; real short
+  headings keep their level, and Word headings are rendered at a restrained ~1.3em instead
+  of the reader's own h1 size.
 - Word text colours that "follow the theme" (`w:themeColor`) are ignored, and any other
   colour with less than 3:1 contrast against the reading background falls back to the
   reader palette so dark themes never produce invisible text.
