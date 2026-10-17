@@ -383,6 +383,17 @@ window.DV = window.DV || {};
       const on = im.classList.toggle('actual');
       DV.Log.info('图片显示：' + (on ? '原始大小' : '适应窗口'));
     };
+    // WebKit 自己解不了的格式（老系统上的 HEIC、少见编码的 TIFF 等）：
+    // 不要只留一个破图标，让 Quick Look 画一张出来
+    im.onerror = function () {
+      if (item.thumbDone || item.thumbFailed || item.srcFromThumb) return;
+      if (item.kind === 'image' && nativeBridge() && item.fullPath) {
+        DV.Log.warn('WebKit 解不了这个图片，改用 Quick Look：' + item.name);
+        requestThumb(item, 'image');
+      } else {
+        mediaFailed(item, DV.t('这张图的格式系统解不了'));
+      }
+    };
   }
 
   /* ---------- PDF ---------- */
@@ -610,6 +621,7 @@ window.DV = window.DV || {};
       return;
     }
     item.thumbDone = true;
+    item.srcFromThumb = item.kind === 'image';
     item.html = '<div class="imgview ql-preview">' +
       '<img class="docview-img" alt="' + DV.escAttr(item.name) + '" src="' + res.data + '">' +
       '</div><div class="img-hint">' +

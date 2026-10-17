@@ -489,6 +489,7 @@ DV.i18n = (function () {
     "这个类型没有可复制的正文": "This type has no body text to copy",
     "预览": "Preview",
     "这个类型只提供预览，没有源码视图": "This type is preview-only and has no source view",
+    "这张图的格式系统解不了": "This image format cannot be decoded by the system",
     /* ---- 文档解析器抛出的说明（会显示在正文区） ---- */
     "不是有效的 ZIP / Office 文档（找不到中央目录）": "Not a valid ZIP / Office file (no central directory found)",
     "这个系统不支持解压（DecompressionStream），请用桌面版打开": "This system cannot decompress files (no DecompressionStream); use the desktop app",
