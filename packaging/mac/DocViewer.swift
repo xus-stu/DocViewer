@@ -4,6 +4,8 @@
 
 import Cocoa
 import WebKit
+import PDFKit
+import QuickLookThumbnailing
 
 // MARK: - 本地文件读取（file:// 页面需要显式放行）
 
@@ -36,14 +38,20 @@ final class OpenedFiles {
         return h
     }
 
+    /// Pages / Keynote / Numbers 默认是「文件包」（一个目录），也要能当文档打开
+    static let packageExts: Set<String> = ["pages", "key", "numbers", "rtfd"]
+
     func allow(_ path: String) {
         let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: key, isDirectory: &isDir), !isDir.boolValue else { return }
+        guard FileManager.default.fileExists(atPath: key, isDirectory: &isDir) else { return }
+        let isPackage = isDir.boolValue && OpenedFiles.packageExts.contains(
+            URL(fileURLWithPath: key).pathExtension.lowercased())
+        guard !isDir.boolValue || isPackage else { return }
         let attrs = try? FileManager.default.attributesOfItem(atPath: key)
         let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
-        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-        let hash = size <= OpenedFiles.hashLimit ? OpenedFiles.contentHash(key) : nil
+        let size = isDir.boolValue ? 0 : ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
+        let hash = (!isDir.boolValue && size <= OpenedFiles.hashLimit) ? OpenedFiles.contentHash(key) : nil
         lock.lock(); stamp[key] = Stamp(mtime: mtime, size: size, hash: hash); lock.unlock()
     }
     func allows(_ path: String) -> Bool {
@@ -61,6 +69,10 @@ final class OpenedFiles {
         guard let old = old else { return false }
         let attrs = try? FileManager.default.attributesOfItem(atPath: key)
         guard let attrs = attrs else { return true }                 // 文件没了
+        if (attrs[.type] as? FileAttributeType) == .typeDirectory {  // 文件包：只看目录 mtime
+            let mt = (attrs[.modificationDate] as? Date) ?? Date.distantPast
+            return mt != old.mtime
+        }
         let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
         if size != old.size { return true }
         if let oh = old.hash, let nh = OpenedFiles.contentHash(key) { return nh != oh }
@@ -132,6 +144,14 @@ final class LocalSchemeHandler: NSObject, WKURLSchemeHandler {
         case "gif": return "image/gif"
         case "svg": return "image/svg+xml"
         case "webp": return "image/webp"
+        case "bmp": return "image/bmp"
+        case "tif", "tiff": return "image/tiff"
+        case "heic", "heif": return "image/heic"
+        case "avif": return "image/avif"
+        case "ico": return "image/x-icon"
+        case "pdf": return "application/pdf"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "pages": return "application/vnd.apple.pages"
         case "woff2": return "font/woff2"
         case "woff": return "font/woff"
         case "ttf": return "font/ttf"
@@ -401,6 +421,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.windowsMenu = nil
     }
 
+    // MARK: 只读预览：PDF 逐页出图 / Quick Look 缩略图
+
+    private let renderQueue = DispatchQueue(label: "com.docviewer.render", qos: .userInitiated)
+
+    static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// body: { path, page(1 起), width(像素) }
+    /// 回：window.__DV_PDF_PAGE({ok, path, page, pages, w, h, data})
+    private func handlePDFPage(_ body: [String: Any]) {
+        guard let path = body["path"] as? String, !path.isEmpty else {
+            replyPDF(false, error: "missing path", path: "", page: 0); return
+        }
+        guard OpenedFiles.shared.allows(path) else {
+            replyPDF(false, error: "refused: file was not opened by this app", path: path, page: 0); return
+        }
+        let pageNo = max(1, (body["page"] as? Int) ?? 1)
+        let width = max(240, min(4000, (body["width"] as? Int) ?? 1200))
+        renderQueue.async { [weak self] in
+            guard let doc = PDFDocument(url: URL(fileURLWithPath: path)) else {
+                DispatchQueue.main.async { self?.replyPDF(false, error: "cannot open pdf", path: path, page: pageNo) }
+                return
+            }
+            let count = doc.pageCount
+            guard pageNo <= count, let page = doc.page(at: pageNo - 1) else {
+                DispatchQueue.main.async {
+                    self?.replyPDF(false, error: "no such page", path: path, page: pageNo)
+                }
+                return
+            }
+            let box = page.bounds(for: .mediaBox)
+            let bw = max(1, box.width), bh = max(1, box.height)
+            // 自己画到位图：像素尺寸可控，而且铺一层白底
+            //（PDF 页面本身是透明的，深色主题下不铺底会变成黑底黑字看不见）
+            let pxW = width
+            let pxH = max(1, Int((CGFloat(width) * bh / bw).rounded()))
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pxW, pixelsHigh: pxH,
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                             isPlanar: false, colorSpaceName: .deviceRGB,
+                                             bytesPerRow: 0, bitsPerPixel: 0),
+                  let gctx = NSGraphicsContext(bitmapImageRep: rep) else {
+                DispatchQueue.main.async {
+                    self?.replyPDF(false, error: "render failed", path: path, page: pageNo)
+                }
+                return
+            }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = gctx
+            gctx.cgContext.setFillColor(NSColor.white.cgColor)
+            gctx.cgContext.fill(CGRect(x: 0, y: 0, width: pxW, height: pxH))
+            let s = CGFloat(pxW) / bw
+            gctx.cgContext.scaleBy(x: s, y: s)
+            page.draw(with: .mediaBox, to: gctx.cgContext)
+            NSGraphicsContext.restoreGraphicsState()
+            guard let png = rep.representation(using: .png, properties: [:]) else {
+                DispatchQueue.main.async {
+                    self?.replyPDF(false, error: "render failed", path: path, page: pageNo)
+                }
+                return
+            }
+            let dataUrl = "data:image/png;base64," + png.base64EncodedString()
+            NSLog("DocViewer: PDF 第 %d/%d 页已渲染（%d 字节）", pageNo, count, png.count)
+            DispatchQueue.main.async {
+                self?.replyPDF(true, error: nil, path: path, page: pageNo, pages: count,
+                               w: Int(bw), h: Int(bh), data: dataUrl)
+            }
+        }
+    }
+
+    private func replyPDF(_ ok: Bool, error: String?, path: String, page: Int,
+                          pages: Int? = nil, w: Int? = nil, h: Int? = nil, data: String? = nil) {
+        var obj: [String: Any] = ["ok": ok, "path": path, "page": page]
+        if let e = error { obj["error"] = e }
+        if let n = pages { obj["pages"] = n }
+        if let n = w { obj["w"] = n }
+        if let n = h { obj["h"] = n }
+        if let d = data { obj["data"] = d }
+        guard let json = try? JSONSerialization.data(withJSONObject: obj),
+              let str = String(data: json, encoding: .utf8) else { return }
+        webView?.evaluateJavaScript("window.__DV_PDF_PAGE && window.__DV_PDF_PAGE(" + str + ")") { _, err in
+            if let err = err { NSLog("pdf reply failed: \(err)") }
+        }
+    }
+
+    /// body: { path, width(像素) }
+    /// Quick Look 缩略图：Pages 这类专有格式拿不到可解析的正文，只能让系统画一张
+    private func handleQuickLook(_ body: [String: Any]) {
+        guard let path = body["path"] as? String, !path.isEmpty else {
+            replyThumb(false, error: "missing path", path: ""); return
+        }
+        guard OpenedFiles.shared.allows(path) else {
+            replyThumb(false, error: "refused: file was not opened by this app", path: path); return
+        }
+        let width = max(240, min(3000, (body["width"] as? Int) ?? 1200))
+        let url = URL(fileURLWithPath: path)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        // 按 A4 的比例要一张，整页都能进画面
+        let size = CGSize(width: CGFloat(width) / scale, height: CGFloat(width) / scale * 1.414)
+        let req = QLThumbnailGenerator.Request(fileAt: url, size: size, scale: scale,
+                                               representationTypes: [.thumbnail, .lowQualityThumbnail])
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: req) { [weak self] rep, err in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let err = err {
+                    self.replyThumb(false, error: err.localizedDescription, path: path); return
+                }
+                guard let rep = rep, let png = AppDelegate.pngData(rep.nsImage) else {
+                    self.replyThumb(false, error: "no preview", path: path); return
+                }
+                NSLog("DocViewer: Quick Look 预览 %@（%d 字节）", path, png.count)
+                self.replyThumb(true, error: nil, path: path,
+                                w: Int(rep.nsImage.size.width), h: Int(rep.nsImage.size.height),
+                                data: "data:image/png;base64," + png.base64EncodedString())
+            }
+        }
+    }
+
+    private func replyThumb(_ ok: Bool, error: String?, path: String,
+                            w: Int? = nil, h: Int? = nil, data: String? = nil) {
+        var obj: [String: Any] = ["ok": ok, "path": path]
+        if let e = error { obj["error"] = e }
+        if let n = w { obj["width"] = n }
+        if let n = h { obj["height"] = n }
+        if let d = data { obj["data"] = d }
+        guard let json = try? JSONSerialization.data(withJSONObject: obj),
+              let str = String(data: json, encoding: .utf8) else { return }
+        webView?.evaluateJavaScript("window.__DV_THUMB && window.__DV_THUMB(" + str + ")") { _, err in
+            if let err = err { NSLog("thumb reply failed: \(err)") }
+        }
+    }
+
     // MARK: 重新登记可写路径（会话恢复用）
     /// body: { paths: [String] }
     /// 上次运行留下的文件列表在原生侧没有登记，恢复会话后保存会被「没打开过」拒掉。
@@ -492,10 +646,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
             if !isDir.boolValue { out.append(u); continue }
+            // .pages 之类是目录形式的「文件包」，别递归进它内部
+            if OpenedFiles.packageExts.contains(u.pathExtension.lowercased()) { out.append(u); continue }
             if let en = FileManager.default.enumerator(at: u,
-                    includingPropertiesForKeys: [.isRegularFileKey],
+                    includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
                     options: [.skipsHiddenFiles]) {
-                for case let f as URL in en where !f.hasDirectoryPath { out.append(f) }
+                for case let f as URL in en {
+                    if f.hasDirectoryPath {
+                        // 目录形式的文件包（.pages/.key/.numbers）当一个文档收下，
+                        // 并且不要再往里面递归 —— 否则用户会在列表里看到一堆内部数据文件
+                        if OpenedFiles.packageExts.contains(f.pathExtension.lowercased()) {
+                            out.append(f)
+                            en.skipDescendants()
+                        }
+                        continue
+                    }
+                    out.append(f)
+                }
             }
         }
         return out
@@ -593,6 +760,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         case "pickFiles": openFilesPanel()
         case "pickFolder": openFolderPanel()
         case "allowFiles": handleAllowFiles(body)
+        case "pdfPage": handlePDFPage(body)
+        case "quicklook": handleQuickLook(body)
         case "writeFile": handleWriteFile(body)
         default: break
         }

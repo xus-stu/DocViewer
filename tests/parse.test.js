@@ -32,6 +32,8 @@ const sandbox = {
   },
   setTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: () => 0,
+  // office.js 解 ZIP 用；Node 18+ 自带
+  DecompressionStream: typeof DecompressionStream === 'function' ? DecompressionStream : undefined,
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -44,6 +46,7 @@ function load(file) {
 load('util.js');
 load('md.js');
 load('rtf.js');
+load('office.js');
 
 const DV = sandbox.DV;
 
@@ -332,12 +335,136 @@ console.log('\n== 协议白名单 ==');
   }
 }
 
-/* ================== 汇总 ================== */
-console.log('\n---------------------------');
-console.log(`通过 ${pass}   失败 ${fail}`);
-if (failures.length) {
-  console.log('\n失败明细:');
-  failures.forEach((f, i) => console.log('  ' + (i + 1) + '. ' + f));
-  process.exit(1);
+/* ================== Office：ZIP / DOCX / Pages ================== */
+{
+  const zlib = require('zlib');
+
+  /** 现造一个 ZIP（stored + deflate 两种都要能读） */
+  function makeZip(entries) {
+    const chunks = [], central = [];
+    let offset = 0;
+    entries.forEach(function (e) {
+      const name = Buffer.from(e.name, 'utf8');
+      const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data, 'utf8');
+      const comp = e.deflate ? zlib.deflateRawSync(raw) : raw;
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0);
+      lh.writeUInt16LE(20, 4);
+      lh.writeUInt16LE(e.deflate ? 8 : 0, 8);
+      lh.writeUInt32LE(0, 14);
+      lh.writeUInt32LE(comp.length, 18);
+      lh.writeUInt32LE(raw.length, 22);
+      lh.writeUInt16LE(name.length, 26);
+      chunks.push(lh, name, comp);
+      const cd = Buffer.alloc(46);
+      cd.writeUInt32LE(0x02014b50, 0);
+      cd.writeUInt16LE(20, 4);
+      cd.writeUInt16LE(20, 6);
+      cd.writeUInt16LE(e.deflate ? 8 : 0, 10);
+      cd.writeUInt32LE(comp.length, 20);
+      cd.writeUInt32LE(raw.length, 24);
+      cd.writeUInt16LE(name.length, 28);
+      cd.writeUInt32LE(offset, 42);
+      central.push(cd, name);
+      offset += lh.length + name.length + comp.length;
+    });
+    const cdBuf = Buffer.concat(central);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(entries.length, 8);
+    eocd.writeUInt16LE(entries.length, 10);
+    eocd.writeUInt32LE(cdBuf.length, 12);
+    eocd.writeUInt32LE(offset, 16);
+    return new Uint8Array(Buffer.concat(chunks.concat([cdBuf, eocd])));
+  }
+
+  function finish() {
+    console.log('\n---------------------------');
+    console.log('通过 ' + pass + '   失败 ' + fail);
+    if (failures.length) {
+      console.log('\n失败明细:');
+      failures.forEach((f, i) => console.log('  ' + (i + 1) + '. ' + f));
+      process.exit(1);
+    }
+    console.log('全部通过 ✔');
+  }
+
+  if (typeof DecompressionStream !== 'function') {
+    console.log('\n（这个 Node 没有 DecompressionStream，Office 用例跳过）');
+    finish();
+  } else {
+    const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+    console.log('\n== Office 预览 ==');
+
+    (async function () {
+      // 1) 真实 Word 文件（python-docx 生成）
+      const bytes = new Uint8Array(fs.readFileSync(path.join(ROOT, 'examples/sample.docx')));
+      const r = await DV.office.renderDocx(bytes);
+      const h = r.html;
+      ok(h.indexOf('<h1') >= 0, 'DOCX：一级标题识别成 <h1>');
+      ok(h.indexOf('DocViewer Word 样例') >= 0, 'DOCX：标题文字');
+      ok(h.indexOf('<b>') >= 0 && h.indexOf('这一句加粗') >= 0, 'DOCX：加粗');
+      ok(h.indexOf('<i>') >= 0 && h.indexOf('这一句斜体') >= 0, 'DOCX：斜体');
+      ok(h.indexOf('<u>') >= 0, 'DOCX：下划线');
+      ok(h.indexOf('<h2') >= 0, 'DOCX：二级标题');
+      ok(/text-align:center/.test(h), 'DOCX：居中对齐');
+      ok(/color:#c03030/.test(h), 'DOCX：文字颜色', h.slice(0, 300));
+      ok(/font-size:13pt/.test(h), 'DOCX：字号 26 半磅 → 13pt');
+      ok(h.indexOf('<ul') >= 0 && h.indexOf('第一项') >= 0, 'DOCX：项目符号列表');
+      ok(h.indexOf('<table') >= 0 && (h.match(/<td/g) || []).length >= 6, 'DOCX：表格与单元格');
+      ok(r.paragraphs >= 6, 'DOCX：段落计数 ' + r.paragraphs);
+      ok(r.tables >= 1, 'DOCX：表格计数 ' + r.tables);
+      const plain = DV.office.plainOf(h);
+      ok(plain.indexOf('DocViewer Word 样例') >= 0 && plain.indexOf('表头1') >= 0,
+         'DOCX：纯文本可用于复制 / 搜索');
+
+      // 2) 现造的 ZIP：stored 与 deflate 都要能读
+      const stored = makeZip([{ name: 'word/document.xml', data: '<x/>', deflate: false }]);
+      const dir1 = DV.office.readZipDirectory(stored);
+      ok(!!dir1['word/document.xml'], 'ZIP：能读出目录（stored）');
+      const e1 = await DV.office.readEntry(stored, dir1, 'word/document.xml');
+      ok(new TextDecoder().decode(e1) === '<x/>', 'ZIP：stored 条目读回原文');
+
+      const body = '<w:document ' + W + '><w:body>'
+        + '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>标题一</w:t></w:r></w:p>'
+        + '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗段</w:t></w:r>'
+        + '<w:r><w:t xml:space="preserve"> 普通段</w:t></w:r></w:p>'
+        + '<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>列表项</w:t></w:r></w:p>'
+        + '<w:tbl><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid>'
+        + '<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>'
+        + '<w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+        + '<w:p/></w:body></w:document>';
+      const zipped = makeZip([{ name: 'word/document.xml', data: body, deflate: true }]);
+      const r2 = await DV.office.renderDocx(zipped);
+      ok(r2.html.indexOf('标题一') >= 0 && /<h1/.test(r2.html), 'DOCX（deflate）：标题');
+      ok(/<b>加粗段<\/b>/.test(r2.html), 'DOCX（deflate）：加粗', r2.html);
+      ok(r2.html.indexOf('<li>') >= 0 && r2.html.indexOf('列表项') >= 0, 'DOCX（deflate）：列表项');
+      ok(r2.html.indexOf('<table') >= 0 && r2.html.indexOf('<td>') >= 0, 'DOCX（deflate）：表格');
+      ok(r2.html.indexOf('<br>') >= 0, 'DOCX（deflate）：空段落留了一个占位');
+
+      // 3) Pages：取文件里内嵌的预览图
+      const jpg = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
+      const pagesZip = makeZip([
+        { name: 'Index/Document.iwa', data: Buffer.from('iwa'), deflate: true },
+        { name: 'preview.jpg', data: jpg, deflate: false },
+      ]);
+      const pv = await DV.office.pagesPreview(pagesZip);
+      ok(!!pv && pv.mime === 'image/jpeg', 'Pages：找到内嵌预览图');
+      ok(!!pv && pv.data.length === jpg.length && pv.data[0] === 0xFF, 'Pages：预览图字节正确');
+      const noPv = await DV.office.pagesPreview(makeZip([{ name: 'Index/Document.iwa', data: 'x' }]));
+      ok(noPv === null, 'Pages：没有预览图时返回 null（交给 Quick Look）');
+
+      // 4) 不是 Office 文件：给一句人看得懂的错误
+      let err = null;
+      try { await DV.office.renderDocx(new Uint8Array([1, 2, 3, 4, 5])); } catch (e) { err = e; }
+      ok(!!err && /不是有效的 ZIP/.test(err.message), 'Office：非 ZIP 输入给出可读错误',
+         err && err.message);
+
+      finish();
+    })().catch(function (e) {
+      fail++;
+      failures.push('Office 用例抛异常: ' + (e && e.message));
+      finish();
+    });
+  }
 }
-console.log('全部通过 ✔');

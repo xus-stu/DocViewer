@@ -362,6 +362,8 @@ const sandbox = {
   setInterval, clearInterval, setTimeout, clearTimeout,
   getComputedStyle: () => ({ getPropertyValue: k => ({ '--accent': '#8cc63f', '--line': '#33383f' }[k] || '#000') }),
   TextDecoder, TextEncoder, Blob: class { constructor(a) { this.size = (a || []).join('').length; } },
+  DecompressionStream: typeof DecompressionStream === 'function' ? DecompressionStream : undefined,
+  btoa: b => Buffer.from(b, 'binary').toString('base64'),
   URL: { createObjectURL: () => 'blob:x', revokeObjectURL: () => { } },
   alert: () => { }, confirm: () => true,
   FileReader: function () { },
@@ -429,7 +431,7 @@ sandbox.console = Object.assign(Object.create(console), {
   error: (...a) => { errors.push(a.join(' ')); console.error(...a); },
 });
 
-for (const f of ['util.js', 'i18n.js', 'welcome.js', 'frames.js', 'settings.js', 'md.js', 'rtf.js', 'debug.js', 'ui-settings.js', 'app.js']) {
+for (const f of ['util.js', 'i18n.js', 'welcome.js', 'frames.js', 'settings.js', 'md.js', 'office.js', 'rtf.js', 'debug.js', 'ui-settings.js', 'app.js']) {
   try {
     vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8'), ctx, { filename: 'js/' + f });
     ok(true, f + ' 加载成功');
@@ -1408,6 +1410,134 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
     }
 
     p1Restore();
+  }
+
+  /* --- 场景 7c-12：只读预览（图片 / PDF / Word / Pages）--- */
+  {
+    const mkKeep = App.state.files.slice();
+    const mkKeepActive = App.state.activeId;
+    const tick = () => new Promise(r => setImmediate(r));
+    const binItem = (name, bytes, id) => ({
+      id: id, name: name, path: '', size: bytes.length, kind: DV.kindOf(name),
+      file: { name: name, size: bytes.length, webkitRelativePath: '',
+              arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength) },
+      text: '', bytes: bytes.length,
+    });
+
+    // 1x1 透明 PNG
+    const png = new Uint8Array(Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'));
+
+    ok(DV.kindOf('a.png') === 'image' && DV.kindOf('b.jpeg') === 'image' && DV.kindOf('c.svg') === 'image',
+       '类型：图片扩展名识别');
+    ok(DV.kindOf('a.pdf') === 'pdf', '类型：PDF 识别');
+    ok(DV.kindOf('a.docx') === 'docx' && DV.kindOf('a.doc') === 'docx', '类型：Word 识别');
+    ok(DV.kindOf('a.pages') === 'pages', '类型：Pages 识别');
+    ok(DV.isBinaryKind('image') && DV.isBinaryKind('pdf') && DV.isBinaryKind('docx') &&
+       DV.isBinaryKind('pages') && !DV.isBinaryKind('txt'), '类型：只读预览集合');
+
+    // ---- 图片 ----
+    await App.ingest([binItem('图.png', png, 'med-png')], { showProgress: false });
+    const img = App.state.files.find(f => f.name === '图.png');
+    ok(!!img, '图片已导入');
+    if (img) {
+      ok(img.kind === 'image', '图片 kind 正确');
+      ok(String(img.html).indexOf('<img') >= 0, '图片：生成 <img>');
+      ok(!!img.srcUrl, '图片：有可用的 src（blob 或 docviewer://）');
+      ok(img.text === '', '图片：没有正文文本（不参与搜索）');
+      App.select(img.id);
+      ok(App.canEdit() === false, '图片：不可编辑');
+      ok(documentObj.getElementById('btnRaw').disabled === true, '图片：源码按钮被禁用');
+      ok(documentObj.getElementById('btnCopy').disabled === true, '图片：复制按钮被禁用');
+      ok(App.manualSave() === false, '图片：保存不会写文件');
+    }
+
+    // ---- PDF：先占位，原生逐页回图 ----
+    {
+      const fakePdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);   // "%PDF-"
+      const it = binItem('手册.pdf', fakePdf, 'med-pdf');
+      it.fullPath = '/tmp/docviewer-preview.pdf';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      await App.ingest([it], { showProgress: false });
+      const pdf = App.state.files.find(f => f.name === '手册.pdf');
+      ok(!!pdf, 'PDF 已导入');
+      App.select(pdf.id);
+      const req = sent.filter(m => m.action === 'pdfPage' && m.page === 1)[0];
+      ok(!!req, 'PDF：自动请求第 1 页');
+      ok(req && req.width >= 600, 'PDF：按像素宽度请求（' + (req && req.width) + '）');
+      ok(String(pdf.html).indexOf('读取 PDF') >= 0, 'PDF：显示读取中的占位');
+      windowObj.__DV_PDF_PAGE({ ok: true, path: pdf.fullPath, page: 1, pages: 3, w: 600, h: 800,
+                                data: 'data:image/png;base64,AAAA' });
+      ok(pdf.pdfCount === 3, 'PDF：页数来自原生回执');
+      const pages = documentObj.querySelectorAll('.pdf-page');
+      ok(pages.length === 3, 'PDF：按页数排好了占位（' + pages.length + '）');
+      ok(String(App.els.doc.innerHTML).indexOf('data:image/png;base64,AAAA') >= 0,
+         'PDF：第 1 页的图已就位');
+      windowObj.__DV_PDF_PAGE({ ok: true, path: '/elsewhere.pdf', page: 1, pages: 1,
+                                data: 'data:image/png;base64,BBBB' });
+      ok(pdf.pdfCount === 3, 'PDF：别的文件的回执不会串进来');
+      delete windowObj.webkit;
+    }
+
+    // ---- Word：真的解析 examples/sample.docx ----
+    {
+      const docxBytes = new Uint8Array(fs.readFileSync(path.join(ROOT, 'examples/sample.docx')));
+      await App.ingest([binItem('样例.docx', docxBytes, 'med-docx')], { showProgress: false });
+      const dx = App.state.files.find(f => f.name === '样例.docx');
+      ok(!!dx, 'Word 文档已导入');
+      App.select(dx.id);
+      ok(App.canEdit() === false, 'Word：不可编辑');
+      for (let i = 0; i < 30 && !dx.docxDone; i++) await tick();
+      ok(dx.docxDone === true, 'Word：解析完成');
+      ok(String(dx.html).indexOf('DocViewer Word 样例') >= 0, 'Word：正文进入 DOM', String(dx.html).slice(0, 120));
+      ok(String(App.els.doc.innerHTML).indexOf('DocViewer Word 样例') >= 0, 'Word：渲染到了正文区');
+      ok(dx.text.length > 10, 'Word：抽出了纯文本（可复制 / 可统计）');
+      ok(documentObj.getElementById('btnCopy').disabled === false, 'Word：复制按钮可用');
+      ok(dx.encoding === '二进制', 'Word：编码标成二进制');
+    }
+
+    // ---- Pages：交给 Quick Look ----
+    {
+      const pagesZip = new Uint8Array(fs.readFileSync(path.join(ROOT, 'examples/sample.docx')));
+      const it = binItem('文稿.pages', new Uint8Array([0x50, 0x4b, 0x03, 0x04]), 'med-pages');
+      it.fullPath = '/tmp/docviewer-preview.pages';
+      const sent = [];
+      windowObj.webkit = { messageHandlers: { dv: { postMessage: m => sent.push(m) } } };
+      await App.ingest([it], { showProgress: false });
+      const pg = App.state.files.find(f => f.name === '文稿.pages');
+      ok(!!pg, 'Pages 文稿已导入');
+      App.select(pg.id);
+      const ql = sent.filter(m => m.action === 'quicklook')[0];
+      ok(!!ql, 'Pages：向系统要 Quick Look 预览');
+      ok(ql && ql.path === '/tmp/docviewer-preview.pages', 'Pages：请求的是这个文件');
+      windowObj.__DV_THUMB({ ok: true, path: pg.fullPath, width: 800, height: 1131,
+                             data: 'data:image/png;base64,CCCC' });
+      ok(String(pg.html).indexOf('data:image/png;base64,CCCC') >= 0, 'Pages：预览图已显示');
+      ok(String(pg.html).indexOf('Quick Look') >= 0, 'Pages：说明了这是系统预览图');
+      ok(App.canEdit() === false, 'Pages：不可编辑');
+      delete windowObj.webkit;
+      void pagesZip;
+    }
+
+    // ---- 会话：二进制条目不存正文，恢复后按路径重来 ----
+    {
+      App.saveSession();
+      const dumped = JSON.parse(localStorageData['docviewer.session'] || '{}');
+      const rec = (dumped.files || []).find(f => f.name === '图.png');
+      ok(!!rec, '会话：记住了图片条目');
+      ok(rec && rec.binary === true, '会话：二进制标记已保存');
+      ok(rec && rec.text === '', '会话：没有把图片字节当文本存进去');
+      ok(rec && rec.fullPath === img.fullPath, '会话：路径可用于恢复');
+    }
+
+    // 复原
+    App.state.files.length = 0;
+    mkKeep.forEach(f => App.state.files.push(f));
+    if (mkKeepActive) App.select(mkKeepActive);
+    DV.Settings.set({ editMode: 'ro' });
+    App.refreshList();
   }
 
   /* --- 场景 7d：帧率采样（不受 rAF 限制）--- */

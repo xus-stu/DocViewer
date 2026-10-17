@@ -1241,3 +1241,64 @@ body[data-edit="on"] .doc { cursor: text; }
 .dv-choose-actions {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap;
 }
+
+/* ---------- 只读预览：图片 / PDF / Word / Pages ---------- */
+.doc.media { padding-top: 8px; }
+.doc.media[data-pad="0"] { padding-bottom: 8px; }
+
+.media-state {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 64px 20px; color: var(--text-2); font-size: 13px; text-align: center;
+}
+.media-state .media-title { font-weight: 600; color: var(--text); }
+.media-state .media-why { color: var(--text-3); font-size: 12px; line-height: 1.7; max-width: 560px; word-break: break-word; }
+.media-state.err .media-title { color: var(--err); }
+
+/* 图片 */
+.imgview { display: flex; justify-content: center; }
+.docview-img {
+  max-width: 100%; height: auto; display: block;
+  border-radius: 6px; background: var(--bg-2);
+  box-shadow: 0 2px 18px color-mix(in srgb, #000 26%, transparent);
+  cursor: zoom-in;
+}
+.docview-img.actual {
+  max-width: none; width: auto; cursor: zoom-out;
+}
+.doc.media.image { overflow-x: auto; }
+.img-hint {
+  margin-top: 12px; text-align: center;
+  color: var(--text-3); font-size: 11.5px; font-family: var(--mono);
+}
+
+/* PDF：一张一张往下排 */
+.pdf-body { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.pdf-page {
+  position: relative; width: 100%;
+  background: var(--bg-2); border: 1px solid var(--line-soft);
+  border-radius: 4px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.pdf-page img { width: 100%; height: auto; display: block; }
+.pdf-page .pdf-wait {
+  color: var(--text-3); font-family: var(--mono); font-size: 11.5px;
+}
+
+/* Word：复用正文样式，只补表格边框 */
+.docx-wrap { max-width: 100%; }
+.docx-body p { margin: .62em 0; }
+.docx-list { margin: .5em 0 .5em 0; padding-left: 1.6em; }
+.docx-list li { margin: .22em 0; }
+.docx-table {
+  border-collapse: collapse; margin: .9em 0; max-width: 100%;
+  font-size: .95em; display: block; overflow-x: auto;
+}
+.docx-table td, .docx-table th {
+  border: 1px solid var(--line); padding: 5px 9px;
+  vertical-align: top; min-width: 2em;
+}
+.docx-table td p { margin: 0; }
+.docx-r { word-break: break-word; }
+
+/* Pages 的内嵌预览图是整页位图 */
+.pages-preview .docview-img, .ql-preview .docview-img { cursor: default; background: #fff; }

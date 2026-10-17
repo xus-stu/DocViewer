@@ -30,7 +30,10 @@ open index.html                   # 或者直接双击；也可以用 ./run.sh
 - 支持 `.rtf` / `.txt` / `.md`，以及常见源码与配置文件（`.java` `.kt` `.py` `.js` `.ts`
   `.go` `.rs` `.c` `.cpp` `.cs` `.swift` `.rb` `.php` `.sh` `.sql` `.html` `.css`
   `.json` `.xml` `.yml` `.toml` `.gradle` `.properties` 等），源码按纯文本视图显示
+- 还能**只读预览**图片（PNG / JPEG / GIF / WebP / TIFF / BMP / HEIC / SVG）、PDF、Word
+  （`.docx` / `.doc`）与 Pages（`.pages`）：这几类没有编辑与写回，只负责看清楚
 - 「打开文件」可多选，「导入文件夹」递归读取目录，也可以把文件或整个文件夹拖进窗口
+  （`.pages` 这类目录形式的文件包按一个文档收下，不会列出里面的内部数据文件）
 - 侧栏列出文件，带类型图标、大小、类型标签、悬停删除按钮与文件名筛选。选中、切换、
   上下键移动都在原地改类名，不重建列表
 - 侧栏可以单独收起（顶部 `‹` 按钮、`⌘B` 或设置面板），收起时留一个展开把手，状态会记住
@@ -56,7 +59,13 @@ open index.html                   # 或者直接双击；也可以用 ./run.sh
 |------|----------|
 | `.md` | 自带 Markdown 渲染器：标题、列表与任务列表、表格、引用、代码块（含语言高亮）、链接、图片、分割线、目录 |
 | `.rtf` | 自带 RTF 解析器：字体表与颜色表、粗体/斜体/下划线/删除线、上下标、字号、前景与背景色、段落对齐缩进、`\par` `\line` `\tab`、列表、简单表格、`\'hh` 与 `\uN` 转义 |
+| 图片 | 按窗口宽度缩放显示，点一下在「适应窗口」与「原始大小」之间切换；标题下显示像素尺寸 |
+| `.pdf` | 原生 PDFKit 逐页渲染成位图，滚到哪渲染到哪，只缓存最近十几页 |
+| `.docx` / `.doc` | 页面里自己解 ZIP、解析 `word/document.xml`：标题、段落、粗体/斜体/下划线/删除线、颜色、字号、对齐、列表、表格、上下标；`.doc` 与解析失败时退回系统 Quick Look 预览图 |
+| `.pages` | 交给系统 Quick Look 画第一页（新版 Pages 也是目录形式的文件包）；Quick Look 不行时再找文件里自带的 `preview.jpg` |
 | 其它 | 等宽字体纯文本视图 |
+
+图片、PDF、Word、Pages 是**只读预览**：没有光标、不参与搜索、不参与拼接，也不会写回原文件。
 
 编码检测按 BOM、严格 UTF-8、GB18030/GBK、Big5、Windows-1252 的顺序逐级尝试，
 全部失败时用非致命 UTF-8 打开，保证任何文件都有内容显示，而不是直接报错。
@@ -183,8 +192,8 @@ tests/                  Node 测试与原生写回测试
 ## 测试
 
 ```bash
-node tests/parse.test.js      # 解析器（109 项）
-node tests/smoke.test.js      # 整个应用（467 项）
+node tests/parse.test.js      # 解析器（134 项）
+node tests/smoke.test.js      # 整个应用（508 项）
 
 # 原生写回测试，需要真实文件
 cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
@@ -235,6 +244,9 @@ cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
 - RTF 只覆盖 TextEdit / WordPad / Word 常见的子集，域、脚注、页眉页脚、内嵌图片与修订标记会被跳过
 - RTF 表格只做基础的行列还原，不解析边框样式与合并单元格
 - Markdown 渲染器刻意做得很小，不解析引用式链接定义与数学公式
+- Word 预览不显示文档里的图片、脚注、页眉页脚与修订标记；表格只还原行列与合并列
+- Pages 预览是系统生成的整页位图，文字不可选中（Pages 的正文是 protobuf，没法直接解析）
+- Word 解析要用浏览器的 `DecompressionStream`（macOS 13.3+）；老系统上自动退回 Quick Look 预览图
 - 会话记忆单文件上限 8 MB、总量 64 MB，超出部分只保留在内存中（只有「记住会话」用得到，
   打开与编辑不受影响）。导入文件本身没有数量与大小限制
 - macOS 应用是 ad-hoc 签名，首次启动 Gatekeeper 会提示，右键打开或用

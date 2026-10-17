@@ -285,6 +285,354 @@ window.DV = window.DV || {};
   }
 
   /* ================= 文件解析 ================= */
+  /* ================= 图片 / PDF / Word / Pages 预览（只读） =================
+     这几类没有「正文文本」，不能编辑、不能搜索、不参与写回。
+     渲染尽量只用系统自带能力：图片交给 <img>，PDF 走原生 PDFKit 逐页出图，
+     Word 在页面里解 ZIP + 解析 OOXML，Pages 取文件自带的预览图（不行再问 Quick Look）。 */
+
+  function mediaStateHtml(msg, kind) {
+    return '<div class="media-state ' + (kind || '') + '">' +
+      '<div class="media-title">' + DV.esc(msg) + '</div></div>';
+  }
+
+  function mediaErrorHtml(why) {
+    return '<div class="media-state err">' +
+      '<div class="media-title">' + DV.t('这一份预览不了') + '</div>' +
+      '<div class="media-why">' + DV.esc(DV.t(String(why && why.message ? why.message : why))) + '</div>' +
+      '<div class="media-why">' + DV.t('文件本身没有被改动，可以换用其它软件打开。') + '</div></div>';
+  }
+
+  function repaintMedia(item) {
+    if (active() === item) paintDoc(item, { keepScroll: true });
+  }
+
+  function mediaFailed(item, why) {
+    item.html = mediaErrorHtml(why);
+    item.text = '';
+    item.lines = 0;
+    item.chars = 0;
+    DV.Log.warn('预览失败 ' + item.name + '：' + (why && why.message ? why.message : why));
+    repaintMedia(item);
+  }
+
+  /** 二进制条目：字节不在内存里时（会话恢复）按路径重新读一次 */
+  function loadBinaryBytes(item) {
+    if (item.rawBytes) return;
+    if (!item.fullPath) { mediaFailed(item, DV.t('需要重新打开这个文件才能预览')); return; }
+    if (!nativeBridge()) { mediaFailed(item, DV.t('浏览器里打开的文件没有可用的本地路径')); return; }
+    fetchWithTimeout(DV.localUrl(item.fullPath), 30000).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      item.rawBytes = new Uint8Array(buf);
+      item.bytes = buf.byteLength;
+      item.size = item.bytes;
+      renderFile(item);
+      repaintMedia(item);
+    }, function (e) {
+      mediaFailed(item, item.thumbError || e);
+    });
+  }
+
+  function bytesToDataUrl(bytes, mime) {
+    let bin = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + CH)));
+    }
+    try { return 'data:' + mime + ';base64,' + btoa(bin); }
+    catch (e) { return ''; }
+  }
+
+  /* ---------- 图片 ---------- */
+
+  function renderImageItem(item) {
+    if (!item.srcUrl) {
+      if (item.fullPath && nativeBridge()) item.srcUrl = DV.localUrl(item.fullPath);
+      else if (item.rawBytes) item.srcUrl = bytesToDataUrl(item.rawBytes, 'image/' + (DV.ext(item.name) || 'png'));
+    }
+    if (!item.srcUrl) { mediaFailed(item, DV.t('浏览器里打开的图片没有可用的地址')); return; }
+    item.text = '';
+    item.lines = 0;
+    item.chars = 0;
+    item.html = '<div class="imgview">' +
+      '<img class="docview-img" alt="' + DV.escAttr(item.name) + '" src="' + DV.escAttr(item.srcUrl) + '">' +
+      '</div><div class="img-hint">' + DV.t('点图片在「适应窗口」和「原始大小」之间切换') + '</div>';
+    item.info = {
+      '预览方式': '原始图片',
+      '像素尺寸': item.imgW ? (item.imgW + ' × ' + item.imgH) : '读取中…',
+    };
+  }
+
+  /** 图片渲染后：记像素尺寸，点一下切原始大小 */
+  function wireImageDoc(item) {
+    const im = els.doc && els.doc.querySelector && els.doc.querySelector('.docview-img');
+    if (!im) return;
+    im.onload = function () {
+      item.imgW = im.naturalWidth || 0;
+      item.imgH = im.naturalHeight || 0;
+      if (active() === item) {
+        const pf = DV.Settings.get().metaFields || {};
+        if (pf.size !== false) {
+          els.docMeta.title = item.imgW + ' × ' + item.imgH;
+        }
+        els.docMeta.textContent = item.imgW + ' × ' + item.imgH + '  ·  ' + DV.fmtBytes(item.bytes || item.size);
+      }
+    };
+    im.onclick = function () {
+      const on = im.classList.toggle('actual');
+      DV.Log.info('图片显示：' + (on ? '原始大小' : '适应窗口'));
+    };
+  }
+
+  /* ---------- PDF ---------- */
+
+  function pdfWidth() {
+    const w = (els.docScroll && els.docScroll.clientWidth) || 800;
+    return Math.max(320, w - 48);
+  }
+
+  function renderPdfItem(item) {
+    item.text = '';
+    item.lines = 0;
+    item.chars = 0;
+    if (!nativeBridge() || !item.fullPath) {
+      item.html = mediaErrorHtml(DV.t('PDF 预览需要桌面版（浏览器页面拿不到 PDF 渲染能力）'));
+      return;
+    }
+    if (!item.pdfCount) {
+      item.html = mediaStateHtml(DV.t('正在读取 PDF…'));
+      requestPdfPage(item, 1);
+      return;
+    }
+    item.html = pdfPagesHtml(item);
+  }
+
+  function pdfPagesHtml(item) {
+    const n = item.pdfCount || 1;
+    const ratio = item.pdfRatio || 0.707;
+    const out = [];
+    for (let i = 1; i <= n; i++) {
+      const url = item.pdfCache && item.pdfCache[i];
+      out.push('<div class="pdf-page' + (url ? ' ready' : '') + '" data-page="' + i +
+        '" style="aspect-ratio:' + ratio + '">' +
+        (url ? '<img alt="' + DV.t('第 {n} 页', { n: i }) + '" src="' + url + '">'
+          : '<span class="pdf-wait">' + i + ' / ' + n + '</span>') +
+        '</div>');
+    }
+    return '<div class="pdf-body">' + out.join('') + '</div>';
+  }
+
+  function requestPdfPage(item, page) {
+    item.pdfAsked = item.pdfAsked || {};
+    if (item.pdfAsked[page]) return;
+    item.pdfAsked[page] = true;
+    const bridge = nativeBridge();
+    if (!bridge || !item.fullPath) return;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const width = Math.min(2400, Math.max(600, Math.round(pdfWidth() * dpr)));
+    try {
+      bridge.postMessage({ action: 'pdfPage', path: item.fullPath, page: page, width: width });
+    } catch (e) {
+      item.pdfAsked[page] = false;
+      mediaFailed(item, e);
+    }
+  }
+
+  /** 只请求进入视口附近的那几页 */
+  function observePdfPages(item) {
+    if (item.pdfObs) { try { item.pdfObs.disconnect(); } catch (e) { /* 忽略 */ } item.pdfObs = null; }
+    if (!item.pdfCount) return;
+    const nodes = (els.doc.querySelectorAll && els.doc.querySelectorAll('.pdf-page:not(.ready)')) || [];
+    if (typeof IntersectionObserver !== 'function') {
+      for (let i = 0; i < nodes.length; i++) {
+        const p = parseInt(nodes[i].getAttribute('data-page'), 10);
+        if (p) requestPdfPage(item, p);
+      }
+      return;
+    }
+    item.pdfObs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        const el = en.target;
+        if (item.pdfObs) item.pdfObs.unobserve(el);
+        const p = parseInt(el.getAttribute('data-page'), 10);
+        if (p) requestPdfPage(item, p);
+      });
+    }, { root: els.docScroll, rootMargin: '800px 0px' });
+    for (let i = 0; i < nodes.length; i++) item.pdfObs.observe(nodes[i]);
+  }
+
+  /** 原生把某一页渲染成 PNG 回来了 */
+  window.__DV_PDF_PAGE = function (res) {
+    if (!res || !res.path) return;
+    const item = state.files.find(function (f) { return f.fullPath === res.path; });
+    if (!item) return;
+    if (!res.ok) {
+      if (!item.pdfCount) mediaFailed(item, res.error || 'pdf');
+      else DV.Log.warn('PDF 第 ' + res.page + ' 页渲染失败：' + res.error);
+      return;
+    }
+    item.pdfCache = item.pdfCache || {};
+    if (res.data) item.pdfCache[res.page] = res.data;
+    // 缓存别无限长：只留离当前页最近的若干张，其余的滚回来时再渲染一次
+    const PDF_CACHE_MAX = 14;
+    const keys = Object.keys(item.pdfCache);
+    if (keys.length > PDF_CACHE_MAX) {
+      keys.sort(function (a, b) { return Math.abs(a - res.page) - Math.abs(b - res.page); });
+      keys.slice(PDF_CACHE_MAX).forEach(function (k) {
+        delete item.pdfCache[k];
+        if (item.pdfAsked) item.pdfAsked[k] = false;
+      });
+    }
+    if (typeof res.pages === 'number' && res.pages > 0) item.pdfCount = res.pages;
+    if (res.w && res.h) item.pdfRatio = res.w / res.h;
+    if (!item.pdfBuilt) {
+      item.pdfBuilt = true;
+      item.html = pdfPagesHtml(item);
+      repaintMedia(item);
+    } else if (active() === item && res.data) {
+      const el = els.doc.querySelector('.pdf-page[data-page="' + res.page + '"]');
+      if (el) {
+        el.classList.add('ready');
+        el.innerHTML = '<img alt="' + DV.t('第 {n} 页', { n: res.page }) + '" src="' + res.data + '">';
+      }
+    }
+    DV.Log.info('PDF 预览：' + item.name + ' 第 ' + res.page + '/' + (item.pdfCount || '?') + ' 页');
+  };
+
+  /* ---------- Word ---------- */
+
+  function renderDocxItem(item) {
+    if (!item.rawBytes) {
+      item.html = mediaStateHtml(DV.t('正在读取文档…'));
+      loadBinaryBytes(item);
+      return;
+    }
+    if (item.html && item.docxDone) return;
+    item.html = mediaStateHtml(DV.t('正在解析 Word 文档…'));
+    parseDocx(item);
+  }
+
+  function parseDocx(item) {
+    if (!DV.office) { mediaFailed(item, DV.t('缺少文档解析模块')); return; }
+    DV.office.renderDocx(item.rawBytes).then(function (r) {
+      item.docxDone = true;
+      item.html = '<div class="docx-wrap">' + r.html + '</div>';
+      item.text = DV.office.plainOf(r.html);
+      item.lines = countLines(item.text);
+      item.chars = item.text.length;
+      item.warnings = (r.warnings || []).slice();
+      item.info = {
+        '段落': DV.fmtNum(r.paragraphs),
+        '表格': DV.fmtNum(r.tables),
+        '预览方式': '内置解析（只读）',
+      };
+      (r.warnings || []).forEach(function (w) { DV.Log.warn(item.name + '：' + w); });
+      DV.Log.ok('已解析 Word 文档 ' + item.name + '（' + r.paragraphs + ' 段）');
+      repaintMedia(item);
+    }, function (e) {
+      // 老系统没有 DecompressionStream：退回让 Quick Look 出一张预览图
+      if (item.fullPath && nativeBridge()) requestThumb(item, e);
+      else mediaFailed(item, e);
+    });
+  }
+
+  /* ---------- Pages ---------- */
+
+  function renderPagesItem(item) {
+    if (item.pagesDone) return;
+    // Pages 的正文是 iwa（protobuf），解析不了；而且新版 .pages 默认是「文件包」目录。
+    // 先让系统 Quick Look 直接画第一页；它画不出来（老系统 / 怪文件）再退回去找内嵌预览图。
+    if (nativeBridge() && item.fullPath && !item.thumbFailed) {
+      if (item.thumbAsked) return;
+      item.html = mediaStateHtml(DV.t('正在生成 Pages 预览…'));
+      requestThumb(item, 'pages');
+      return;
+    }
+    if (!item.rawBytes) {
+      item.html = mediaStateHtml(DV.t('正在读取文稿…'));
+      loadBinaryBytes(item);
+      return;
+    }
+    item.html = mediaStateHtml(DV.t('正在读取 Pages 文稿…'));
+    pagesPreview(item);
+  }
+
+  function pagesPreview(item) {
+    if (!DV.office) { mediaFailed(item, DV.t('缺少文档解析模块')); return; }
+    DV.office.pagesPreview(item.rawBytes).then(function (p) {
+      item.pagesDone = true;
+      if (!p) { requestThumb(item, 'no-preview'); return; }
+      const url = bytesToDataUrl(p.data, p.mime);
+      item.html = '<div class="imgview pages-preview">' +
+        '<img class="docview-img" alt="' + DV.escAttr(item.name) + '" src="' + url + '">' +
+        '</div><div class="img-hint">' +
+        DV.t('这是 Pages 文件里自带的预览图，只用于快速浏览，文字不可选中。') + '</div>';
+      item.info = { '预览方式': '文件内嵌预览图（' + p.name + '）' };
+      item.text = '';
+      item.lines = 0;
+      item.chars = 0;
+      DV.Log.ok('Pages 预览（内嵌图）：' + item.name);
+      repaintMedia(item);
+    }, function (e) {
+      requestThumb(item, e);
+    });
+  }
+
+  /* ---------- Quick Look 兜底 ---------- */
+
+  function requestThumb(item, why) {
+    const bridge = nativeBridge();
+    if (!bridge || !item.fullPath) { mediaFailed(item, why); return; }
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const width = Math.min(2000, Math.max(700, Math.round(pdfWidth() * dpr)));
+    item.thumbAsked = true;
+    try {
+      bridge.postMessage({ action: 'quicklook', path: item.fullPath, width: width });
+    } catch (e) { mediaFailed(item, e); }
+  }
+
+  window.__DV_THUMB = function (res) {
+    if (!res || !res.path) return;
+    const item = state.files.find(function (f) { return f.fullPath === res.path; });
+    if (!item) return;
+    if (!res.ok || !res.data) {
+      item.thumbError = res.error || DV.t('系统没有为这个文件生成预览');
+      item.thumbFailed = true;
+      if (item.kind === 'pages') {
+        // Quick Look 不行时还有一条路：单文件 .pages 里通常带着预览图
+        DV.Log.warn('Quick Look 预览失败，改找内嵌预览图：' + item.name + '（' + item.thumbError + '）');
+        renderFile(item);
+      } else {
+        mediaFailed(item, item.thumbError);
+      }
+      return;
+    }
+    item.thumbDone = true;
+    item.html = '<div class="imgview ql-preview">' +
+      '<img class="docview-img" alt="' + DV.escAttr(item.name) + '" src="' + res.data + '">' +
+      '</div><div class="img-hint">' +
+      DV.t('这是系统 Quick Look 生成的预览图，只用于快速浏览。') + '</div>';
+    item.info = { '预览方式': '系统 Quick Look 预览图' + (res.width ? '（' + res.width + '×' + res.height + '）' : '') };
+    item.text = '';
+    item.lines = 0;
+    item.chars = 0;
+    DV.Log.ok('Quick Look 预览：' + item.name);
+    repaintMedia(item);
+  };
+
+  function renderBinary(item) {
+    item.text = item.text || '';
+    switch (item.kind) {
+      case 'image': renderImageItem(item); break;
+      case 'pdf': renderPdfItem(item); break;
+      case 'docx': renderDocxItem(item); break;
+      case 'pages': renderPagesItem(item); break;
+      default: mediaFailed(item, DV.t('不支持的预览类型'));
+    }
+  }
+
   function renderFile(item) {
     const kind = item.kind;
     const t0 = performance.now();
@@ -292,6 +640,11 @@ window.DV = window.DV || {};
     let info = {};
     const warnings = [];
     const text = item.text || '';
+
+    if (DV.isBinaryKind(kind)) {
+      renderBinary(item);
+      return;
+    }
 
     if (kind === 'md') {
       const t1 = performance.now();
@@ -379,6 +732,25 @@ window.DV = window.DV || {};
       const item = fileRecords[idx];
       try {
         const buf = await item.file.arrayBuffer();
+        if (DV.isBinaryKind(item.kind)) {
+          // 图片 / PDF / Word / Pages：不解码成文本，只留字节（页面自己按类型预览）
+          item.rawBytes = new Uint8Array(buf);
+          item.bytes = buf.byteLength;
+          item.size = buf.byteLength;
+          item.encoding = '二进制';
+          item.text = '';
+          item.lines = 0;
+          item.chars = 0;
+          item.big = buf.byteLength > BIG_BYTES;
+          if (item.kind === 'image' && item.file && typeof URL !== 'undefined' &&
+              typeof URL.createObjectURL === 'function') {
+            try { item.srcUrl = URL.createObjectURL(item.file); } catch (e) { /* 忽略 */ }
+          }
+          renderFile(item);
+          state.files.push(item);
+          ok++;
+          continue;
+        }
         // 不按扩展名强制 hint：以前 .rtf 一律当 GBK 解，UTF-8 的中文 RTF 会被
         // 判成 GB18030，DOM 变「涓枃姝ｆ枃」，保存后 \uN 全乱。
         // 统一走字节探测（UTF-8 严格解码优先，可疑时再退回 GBK）。
@@ -827,6 +1199,7 @@ window.DV = window.DV || {};
     if (dirty && canEdit() && !(opts && opts.keepScroll === 'noflush')) {
       try { saveEdit(); } catch (e) { /* 忽略 */ }
     }
+    resetTextChrome();                     // 上一个文件可能是只读预览，控件要恢复
     // P0-1：写回用的容器类型必须在**这次重绘之前**定格。
     // 以前 saveEdit 临时读 state.raw，于是「渲染视图里改完 → 点源码按钮」
     // 会先用 DOM 里渲染后的纯文本把 .rtf 覆盖掉，整份文件变成一段散文。
@@ -867,6 +1240,19 @@ window.DV = window.DV || {};
     if (item.merged) {
       // 合并文档：渲染时的分段标题开关需要即时生效
       renderMerged(item);
+    }
+    if (DV.isBinaryKind(item.kind)) {
+      // 图片 / PDF / Word / Pages：只读预览，源码视图与自动换行都不适用
+      doc.classList.add('media', item.kind);
+      doc.innerHTML = item.html;
+      paintedFor = item.id;
+      paintedPlain = true;                 // 永远不会走写回，标成"非富文本"更安全
+      if (item.kind === 'image') wireImageDoc(item);
+      if (item.kind === 'pdf') observePdfPages(item);
+      setMediaChrome(item);
+      setupReveal();
+      updateMediaInfo(item, t0);
+      return;
     }
     if (state.raw || item.kind === 'txt' || item.kind === 'code') {
       doc.classList.add('plain');
@@ -943,6 +1329,67 @@ window.DV = window.DV || {};
     });
 
     window.__DV_LAST = { item, tags: nodes };
+  }
+
+  /**
+   * 二进制预览时把只对文本有意义的控件关掉（源码 / 自动换行 / 复制），
+   * 状态栏与调试信息单独填，不走文字那一套统计。
+   */
+  function resetTextChrome() {
+    const raw = DV.$('#btnRaw');
+    if (raw) { raw.disabled = false; raw.title = ''; }
+    const cp = DV.$('#btnCopy');
+    if (cp) { cp.disabled = false; cp.title = ''; }
+    const wrap = DV.$('#optWrap');
+    if (wrap) wrap.disabled = false;
+  }
+
+  function setMediaChrome(item) {
+    const raw = DV.$('#btnRaw');
+    if (raw) { raw.disabled = true; raw.classList.remove('on'); raw.textContent = DV.t('源码'); raw.title = DV.t('图片 / PDF / Word / Pages 只提供预览'); }
+    const cp = DV.$('#btnCopy');
+    const canCopy = item.kind === 'docx' && !!(item.text && item.text.length);
+    if (cp) {
+      cp.disabled = !canCopy;
+      cp.title = canCopy ? '' : DV.t('这个类型没有可复制的正文');
+    }
+    const wrap = DV.$('#optWrap');
+    if (wrap) wrap.disabled = true;
+    const sbType = els.sbType;
+    const k = kindBadge(item);
+    if (sbType) sbType.textContent = DV.t(k.label);
+    if (els.sbEnc) els.sbEnc.textContent = item.encoding || DV.t('预览');
+    if (els.sbSize) {
+      els.sbSize.textContent = DV.fmtBytes(item.bytes || item.size) +
+        (item.kind === 'pdf' && item.pdfCount ? ' · ' + DV.fmtNum(item.pdfCount) + ' ' + DV.t('页') : '');
+    }
+    paintMergeBar();
+  }
+
+  /** 二进制预览的文档 / 渲染面板信息 */
+  function updateMediaInfo(item, t0) {
+    const k = kindBadge(item);
+    DV.Debug.setDocument({
+      '__a': { __group: '文件' },
+      '名称': item.name,
+      '相对路径': item.path || '—',
+      '类型': k.label,
+      '大小': DV.fmtBytes(item.bytes || item.size) + ' (' + DV.fmtNum(item.bytes || item.size) + ' B)',
+      '编码': { value: item.encoding || '—', cls: 'acc' },
+      '__b': { __group: '预览' },
+      '模式': '只读预览（不提供编辑与写回）',
+      ...(item.info || {}),
+      '__d': { __group: '告警' },
+      '警告数': { value: (item.warnings || []).length, cls: (item.warnings || []).length ? 'warn' : 'ok' },
+      ...(item.warnings || []).reduce((acc, w, i2) => { acc['warn' + i2] = w; return acc; }, {}),
+    });
+    DV.Debug.setRender({
+      '当前文档': item.name,
+      '视图': '预览',
+      'DOM 注入耗时': DV.fmtMs(performance.now() - t0),
+      '滚动高度': DV.fmtNum(els.docScroll.scrollHeight) + ' px',
+    });
+    window.__DV_LAST = { item: item };
   }
 
   function paintMergeBar() {
@@ -1117,6 +1564,8 @@ window.DV = window.DV || {};
       const rec = (f) => ({
         name: f.name, path: f.path, fullPath: f.fullPath, size: f.bytes || f.size,
         encoding: f.encoding, kind: f.kind, text: f.text || '',
+        // 二进制预览不存正文（存了也没用），恢复时按路径重新读一次
+        binary: !!DV.isBinaryKind(f.kind),
         scroll: Number(f.scrollTop) || 0,        // 该文件的阅读位置
       });
       state.files.forEach(f => {
@@ -1207,6 +1656,7 @@ window.DV = window.DV || {};
     const it = active();
     if (!it) return false;
     if (it.kind === 'md') return false;
+    if (DV.isBinaryKind(it.kind)) return false;   // 图片 / PDF / Word / Pages：只看不写
     return !!(editable() && !it.merged && writablePath(it));
   }
 
@@ -1688,10 +2138,19 @@ window.DV = window.DV || {};
         text: f.text || '',
         file: null,
         restored: true,
+        binary: !!f.binary,
         scrollTop: Number(f.scroll) || 0,        // 上次读到哪儿
       };
-      item.lines = countLines(item.text);
-      item.chars = item.text.length;
+      if (DV.isBinaryKind(item.kind)) {
+        item.encoding = f.encoding || '二进制';
+        item.text = '';
+        item.lines = 0;
+        item.chars = 0;
+        if (item.kind === 'image' && item.fullPath) item.srcUrl = DV.localUrl(item.fullPath);
+      } else {
+        item.lines = countLines(item.text);
+        item.chars = item.text.length;
+      }
       renderFile(item);
       return item;
     };
@@ -1804,6 +2263,21 @@ window.__DV_NATIVE_FILES = function (paths) {
         const res = await fetchWithTimeout(item._fetchUrl, 4000);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const buf = await res.arrayBuffer();
+        if (DV.isBinaryKind(item.kind)) {
+          item.rawBytes = new Uint8Array(buf);
+          item.bytes = buf.byteLength;
+          item.size = buf.byteLength;
+          item.encoding = '二进制';
+          item.text = '';
+          item.lines = 0;
+          item.chars = 0;
+          item.big = buf.byteLength > BIG_BYTES;
+          if (item.kind === 'image') item.srcUrl = item._fetchUrl;
+          renderFile(item);
+          state.files.push(item);
+          ok++;
+          continue;
+        }
         const dec = decodeBuffer(buf, '');
         item.text = dec.text;
         item.encoding = dec.encoding;
@@ -1819,6 +2293,23 @@ window.__DV_NATIVE_FILES = function (paths) {
         state.files.push(item);
         ok++;
       } catch (e) {
+        // 图片 / PDF / Pages 的预览不需要在这里拿字节：
+        // 图片走 docviewer:// 直出、PDF 交给 PDFKit、Pages 交给 Quick Look。
+        // Pages 的文件包（目录）本来就 fetch 不到，不能因此把它丢掉。
+        if (DV.isBinaryKind(item.kind) && item.fullPath) {
+          item.bytes = 0;
+          item.size = 0;
+          item.encoding = '二进制';
+          item.text = '';
+          item.lines = 0;
+          item.chars = 0;
+          if (item.kind === 'image') item.srcUrl = item._fetchUrl;
+          DV.Log.info('原生读取未拿到字节，改用系统预览：' + item.name);
+          renderFile(item);
+          state.files.push(item);
+          ok++;
+          continue;
+        }
         fail++;
         DV.Log.error('原生选择读取失败 ' + item.name + '：' + e.message);
         try { els.sbHint.textContent = 'FETCH FAIL: ' + e.message + ' | ' + item._fetchUrl; } catch (e2) { }
@@ -2214,6 +2705,10 @@ window.__DV_NATIVE_FILES = function (paths) {
   function toggleRaw() {
     const it = active();
     if (!it) { DV.toast('没有打开的文件', 'warn'); return; }
+    if (DV.isBinaryKind(it.kind)) {       // 图片 / PDF / Word / Pages 没有源码视图
+      DV.toast(DV.t('这个类型只提供预览，没有源码视图'), '', 1800);
+      return;
+    }
     state.raw = !state.raw;
     $('#btnRaw').classList.toggle('on', state.raw);
     $('#btnRaw').textContent = DV.t(state.raw ? '渲染' : '源码');
