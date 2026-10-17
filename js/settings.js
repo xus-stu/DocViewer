@@ -144,6 +144,7 @@ DV.Settings = (function () {
     immersiveWidth: 42,// 沉浸模式宽度（em）
     rtfSoftWrap: true, // 把 RTF 里的裸换行当作软换行（TextEdit 导出的文件靠它分段）
     rtfReaderFont: true, // 忽略 RTF 自带字体/字号，统一用阅读器设置呈现
+    docxReaderFont: true, // 同上：Word 也统一成阅读器的字体与字号
     editMode: 'ro',    // ro = 只读（默认，Onlyread）｜ rw = 可编辑（可把内容追加回源文件）
     frameRate: 240,    // 渲染帧率上限；0 = 不限
     anim: 'subtle',    // off | subtle | full

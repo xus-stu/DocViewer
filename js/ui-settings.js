@@ -204,6 +204,7 @@ DV.SettingsUI = (function () {
     els.setImmersive.checked = !!s.immersive;
     els.setSoftWrap.checked = s.rtfSoftWrap !== false;
     els.setRtfFont.checked = s.rtfReaderFont !== false;
+    if (els.setDocxFont) els.setDocxFont.checked = s.docxReaderFont !== false;
     els.setPersist.checked = s.rememberSession !== false;
     els.setScroll.checked = s.rememberScroll !== false;
     els.setShowTitlebar.checked = s.showTitlebar !== false;
@@ -306,6 +307,7 @@ DV.SettingsUI = (function () {
       setImmWidth: $('#setImmWidth'), setImmWidthVal: $('#setImmWidthVal'),
       setImmersive: $('#setImmersive'),
       setSoftWrap: $('#setSoftWrap'), setRtfFont: $('#setRtfFont'),
+      setDocxFont: $('#setDocxFont'),
       segLang: $('#segLang'), segEdit: $('#segEdit'), setWipe: $('#setWipe'), setPersist: $('#setPersist'), setShowTitlebar: $('#setShowTitlebar'), metaGrid: $('#metaGrid'), setScroll: $('#setScroll'),
       customRow: $('#customRow'), ctBg: $('#ctBg'), ctBg2: $('#ctBg2'),
       ctText: $('#ctText'), ctAccent: $('#ctAccent'),
@@ -389,6 +391,12 @@ DV.SettingsUI = (function () {
     els.setRtfFont.addEventListener('change', e => {
       DV.Settings.set({ rtfReaderFont: e.target.checked });
       DV.toast(DV.t('RTF 字体：{state}', { state: DV.t(e.target.checked ? '跟随阅读器' : '使用文件自带') }), '', 1600);
+    });
+
+    // Word 使用阅读器字体与字号
+    if (els.setDocxFont) els.setDocxFont.addEventListener('change', e => {
+      DV.Settings.set({ docxReaderFont: e.target.checked });
+      DV.toast(DV.t('Word 字体：{state}', { state: DV.t(e.target.checked ? '跟随阅读器' : '使用文件自带') }), '', 1600);
     });
 
     // 工具：调试面板 / 诊断报告

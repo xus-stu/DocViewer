@@ -29,15 +29,40 @@ class ClassList {
 }
 function makeStyleDecl(el) {
   const store = {};
-  return {
+  const api = {
     setProperty(k, v) { store[k] = String(v); el.attrs['style-' + k] = String(v); },
     removeProperty(k) { delete store[k]; delete el.attrs['style-' + k]; },
     getPropertyValue(k) { return store[k] || ''; },
     get cssText() { return Object.keys(store).map(k => k + ':' + store[k]).join(';'); },
-    set cssText(v) { Object.keys(store).forEach(k => delete store[k]); },
+    // 真实 DOM 里 style="color:#c00;font-size:12pt" 会被拆进声明里；
+    // 以前这个 setter 只清空，测试里内联样式永远是空的
+    set cssText(v) {
+      Object.keys(store).forEach(k => delete store[k]);
+      String(v || '').split(';').forEach(function (decl) {
+        const i = decl.indexOf(':');
+        if (i < 0) return;
+        const k = decl.slice(0, i).trim().replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+        const val = decl.slice(i + 1).trim();
+        if (k) store[k] = val;
+      });
+    },
     get length() { return Object.keys(store).length; },
     _store: store,
   };
+  // 真实 CSSStyleDeclaration 支持 `style.color = '…'`，这里给常用属性补上访问器，
+  // 否则 app.js 里 `el.style.color = ''` 这类写法在测试里根本看不见效果
+  ['color', 'backgroundColor', 'fontSize', 'fontFamily', 'textAlign', 'textIndent',
+    'marginLeft', 'marginRight', 'display', 'width'].forEach(function (name) {
+    Object.defineProperty(api, name, {
+      get() { return store[name] || ''; },
+      set(v) {
+        if (v === '' || v == null) delete store[name];
+        else store[name] = String(v);
+      },
+      configurable: true, enumerable: true,
+    });
+  });
+  return api;
 }
 
 class Node2 {
@@ -1519,6 +1544,52 @@ ok(!!DV.App, 'app.js 完成初始化（window.DV.App 存在）');
       ok(App.canEdit() === false, 'Pages：不可编辑');
       delete windowObj.webkit;
       void pagesZip;
+    }
+
+    // ---- Word 排版：默认统一用阅读器字体/字号；低对比度颜色必须被换掉 ----
+    {
+      const dx = App.state.files.find(f => f.name === '样例.docx');
+      ok(!!dx, 'Word 排版测试文件在列表里');
+      App.select(dx.id);
+      for (let i = 0; i < 30 && !dx.docxDone; i++) await tick();
+      const html0 = String(dx.html || '');
+      ok(html0.indexOf('font-size') < 0 || html0.indexOf('font-size:13pt') < 0,
+         'Word：默认不写死文档字号');
+      ok(DV.Settings.get().docxReaderFont !== false, 'Word：默认「统一成阅读器字体与字号」');
+
+      // 关掉开关 → 重新解析出文档自带的字号
+      DV.Settings.set({ docxReaderFont: false });
+      for (let i = 0; i < 30 && !dx.docxDone; i++) await tick();
+      ok(dx.docxDone === true, 'Word：切换开关后重新解析完成');
+      ok(String(dx.html).indexOf('font-size:13pt') >= 0, 'Word：关掉后套用文档字号',
+         String(dx.html).slice(0, 200));
+      DV.Settings.set({ docxReaderFont: true });
+      for (let i = 0; i < 30 && !dx.docxDone; i++) await tick();
+      ok(String(dx.html).indexOf('font-size:13pt') < 0, 'Word：再打开开关又统一回去');
+
+      // 低对比度颜色：深色背景 + 近黑文字 → 颜色被交还给阅读器
+      App.select(dx.id);
+      for (let i = 0; i < 30 && !dx.docxDone; i++) await tick();
+      const prevGCS = sandbox.getComputedStyle;
+      sandbox.getComputedStyle = function (el) {
+        const isBg = el === documentObj.body || (el && el.classList && el.classList.contains('doc-scroll'));
+        return {
+          color: isBg ? 'rgb(20,20,24)' : 'rgb(0,0,0)',
+          backgroundColor: isBg ? 'rgb(20,20,24)' : 'rgb(0,0,0)',
+          getPropertyValue: function () { return ''; },
+        };
+      };
+      const span = documentObj.querySelector('.docx-body .docx-r');
+      ok(!!span, 'Word：文档里的有色文字存在');
+      if (span) {
+        ok(span.style.color !== '', 'Word：上色前 style.color 有值（' + span.style.color + '）');
+        App.paintDoc(dx, { keepScroll: true });
+        const span2 = documentObj.querySelector('.docx-body .docx-r');
+        ok(!!span2 && span2.style.color === '',
+           'Word：近黑文字在深色底色下被去掉颜色（不会看不见）',
+           span2 && span2.style.color);
+      }
+      sandbox.getComputedStyle = prevGCS;
     }
 
     // ---- 会话：二进制条目不存正文，恢复后按路径重来 ----

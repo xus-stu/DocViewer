@@ -408,8 +408,13 @@ console.log('\n== 协议白名单 ==');
       ok(h.indexOf('<u>') >= 0, 'DOCX：下划线');
       ok(h.indexOf('<h2') >= 0, 'DOCX：二级标题');
       ok(/text-align:center/.test(h), 'DOCX：居中对齐');
-      ok(/color:#c03030/.test(h), 'DOCX：文字颜色', h.slice(0, 300));
-      ok(/font-size:13pt/.test(h), 'DOCX：字号 26 半磅 → 13pt');
+      ok(/color:#c03030/.test(h), 'DOCX：显式文字颜色保留', h.slice(0, 300));
+      // 默认「统一成阅读器的字体与字号」：不把文档自带的字体/字号写进正文
+      ok(!/font-size:\s*13pt/.test(h), 'DOCX：默认不套用文档自带字号');
+      ok(!/font-family:\s*"/.test(h.replace(/font-family:[^;"]*;?/g, m => m.indexOf('&quot;') >= 0 ? m : '')),
+         'DOCX：默认不套用文档自带字体');
+      const rk = await DV.office.renderDocx(bytes, { keepFonts: true });
+      ok(/font-size:13pt/.test(rk.html), 'DOCX：打开开关后才套用文档字号');
       ok(h.indexOf('<ul') >= 0 && h.indexOf('第一项') >= 0, 'DOCX：项目符号列表');
       ok(h.indexOf('<table') >= 0 && (h.match(/<td/g) || []).length >= 6, 'DOCX：表格与单元格');
       ok(r.paragraphs >= 6, 'DOCX：段落计数 ' + r.paragraphs);
@@ -441,6 +446,37 @@ console.log('\n== 协议白名单 ==');
       ok(r2.html.indexOf('<li>') >= 0 && r2.html.indexOf('列表项') >= 0, 'DOCX（deflate）：列表项');
       ok(r2.html.indexOf('<table') >= 0 && r2.html.indexOf('<td>') >= 0, 'DOCX（deflate）：表格');
       ok(r2.html.indexOf('<br>') >= 0, 'DOCX（deflate）：空段落留了一个占位');
+
+      // 2b) 图片：关系表 + word/media → data URL；主题色不能被当成黑色
+      {
+        const pngBytes = Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          'base64');
+        const withImg = '<w:document ' + W + '><w:body>'
+          + '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/>'
+          + '<a:graphic><a:graphicData><a:pic><a:blip r:embed="rId7"/></a:pic></a:graphicData></a:graphic>'
+          + '</wp:inline></w:drawing></w:r></w:p>'
+          + '<w:p><w:r><w:rPr><w:color w:val="000000" w:themeColor="text1"/></w:rPr>'
+          + '<w:t>跟随主题的正文</w:t></w:r></w:p>'
+          + '<w:p><w:r><w:rPr><w:color w:val="C03030"/></w:rPr><w:t>显式红色</w:t></w:r></w:p>'
+          + '</w:body></w:document>';
+        const rels = '<?xml version="1.0"?><Relationships>'
+          + '<Relationship Id="rId7" Type="image" Target="media/image1.png"/>'
+          + '</Relationships>';
+        const imgZip = makeZip([
+          { name: 'word/document.xml', data: withImg, deflate: true },
+          { name: 'word/_rels/document.xml.rels', data: rels, deflate: true },
+          { name: 'word/media/image1.png', data: pngBytes, deflate: false },
+        ]);
+        const ri = await DV.office.renderDocx(imgZip);
+        ok(/<img class="docx-img" src="data:image\/png;base64,/.test(ri.html),
+           'DOCX：内嵌图片转成 data URL', ri.html.slice(0, 200));
+        ok(/width:96px;height:48px/.test(ri.html), 'DOCX：图片按 EMU 还原成像素尺寸', ri.html);
+        ok(ri.images === 1, 'DOCX：图片计数 ' + ri.images);
+        ok(ri.html.indexOf('color:#000000') < 0,
+           'DOCX：带 themeColor 的黑色不上色（深色主题下才不会看不见）');
+        ok(/color:#c03030/.test(ri.html), 'DOCX：显式颜色仍然保留');
+      }
 
       // 3) Pages：取文件里内嵌的预览图
       const jpg = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);

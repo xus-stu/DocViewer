@@ -61,7 +61,7 @@ open index.html                   # 或者直接双击；也可以用 ./run.sh
 | `.rtf` | 自带 RTF 解析器：字体表与颜色表、粗体/斜体/下划线/删除线、上下标、字号、前景与背景色、段落对齐缩进、`\par` `\line` `\tab`、列表、简单表格、`\'hh` 与 `\uN` 转义 |
 | 图片 | 按窗口宽度缩放显示，点一下在「适应窗口」与「原始大小」之间切换；标题下显示像素尺寸 |
 | `.pdf` | 原生 PDFKit 逐页渲染成位图，滚到哪渲染到哪，只缓存最近十几页 |
-| `.docx` / `.doc` | 页面里自己解 ZIP、解析 `word/document.xml`：标题、段落、粗体/斜体/下划线/删除线、颜色、字号、对齐、列表、表格、上下标；`.doc` 与解析失败时退回系统 Quick Look 预览图 |
+| `.docx` / `.doc` | 页面里自己解 ZIP、解析 `word/document.xml`：标题、段落、粗体/斜体/下划线/删除线、颜色、对齐、列表、表格、上下标，以及**内嵌图片**（关系表 + media → data URL，按 EMU 还原尺寸）；`.doc` 与解析失败时退回系统 Quick Look 预览图。默认统一用阅读器的字体与字号（标题层级保留），可以在设置里关掉以还原文档本身排版 |
 | `.pages` | 交给系统 Quick Look 画第一页（新版 Pages 也是目录形式的文件包）；Quick Look 不行时再找文件里自带的 `preview.jpg` |
 | 其它 | 等宽字体纯文本视图 |
 
@@ -192,8 +192,8 @@ tests/                  Node 测试与原生写回测试
 ## 测试
 
 ```bash
-node tests/parse.test.js      # 解析器（134 项）
-node tests/smoke.test.js      # 整个应用（508 项）
+node tests/parse.test.js      # 解析器（141 项）
+node tests/smoke.test.js      # 整个应用（517 项）
 
 # 原生写回测试，需要真实文件
 cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
@@ -244,7 +244,8 @@ cd packaging/mac && cp ../../tests/append_test.swift /tmp/main.swift \
 - RTF 只覆盖 TextEdit / WordPad / Word 常见的子集，域、脚注、页眉页脚、内嵌图片与修订标记会被跳过
 - RTF 表格只做基础的行列还原，不解析边框样式与合并单元格
 - Markdown 渲染器刻意做得很小，不解析引用式链接定义与数学公式
-- Word 预览不显示文档里的图片、脚注、页眉页脚与修订标记；表格只还原行列与合并列
+- Word 预览不显示脚注、页眉页脚与修订标记；表格只还原行列与合并列；图片只认 PNG / JPEG / GIF / BMP / WebP / TIFF / SVG，Word 里的 EMF/WMF 矢量图会被跳过
+- Word 文档里「跟随主题」的文字颜色（`w:themeColor`）会被忽略；其它颜色如果与阅读背景对比度低于 3:1，也会改用阅读器配色，免得深色主题下看不见
 - Pages 预览是系统生成的整页位图，文字不可选中（Pages 的正文是 protobuf，没法直接解析）
 - Word 解析要用浏览器的 `DecompressionStream`（macOS 13.3+）；老系统上自动退回 Quick Look 预览图
 - 会话记忆单文件上限 8 MB、总量 64 MB，超出部分只保留在内存中（只有「记住会话」用得到，

@@ -527,7 +527,8 @@ window.DV = window.DV || {};
 
   function parseDocx(item) {
     if (!DV.office) { mediaFailed(item, DV.t('缺少文档解析模块')); return; }
-    DV.office.renderDocx(item.rawBytes).then(function (r) {
+    const keepFonts = DV.Settings.get().docxReaderFont === false;
+    DV.office.renderDocx(item.rawBytes, { keepFonts: keepFonts }).then(function (r) {
       item.docxDone = true;
       item.html = '<div class="docx-wrap">' + r.html + '</div>';
       item.text = DV.office.plainOf(r.html);
@@ -537,6 +538,8 @@ window.DV = window.DV || {};
       item.info = {
         '段落': DV.fmtNum(r.paragraphs),
         '表格': DV.fmtNum(r.tables),
+        '图片': DV.fmtNum(r.images || 0),
+        '排版': keepFonts ? '沿用文档自带字体与字号' : '统一用阅读器字体与字号',
         '预览方式': '内置解析（只读）',
       };
       (r.warnings || []).forEach(function (w) { DV.Log.warn(item.name + '：' + w); });
@@ -1120,19 +1123,23 @@ window.DV = window.DV || {};
       scrollDocTo(Math.max(0, rel), 320);
     }
     paintMergeBar();
-    fixRtfColors(els.doc);
+    fixReaderColors(els.doc);
     applyEditMode();
   }
 
   /**
-   * RTF 自带颜色适配：若某段文字与阅读背景的对比度过低（例如深色主题下的黑字），
+   * 自带颜色适配：若某段文字与阅读背景的对比度过低（例如深色主题下的黑字），
    * 就把这段颜色交还给阅读器配色。只改呈现，不动原文件。
+   * RTF 与 Word 共用这一套 —— Word 文档里 themeColor 的兜底值经常就是 000000，
+   * 深色主题下正文会整段看不见。
    */
-  function fixRtfColors(doc) {
+  function fixReaderColors(doc) {
     if (!doc || !doc.querySelector) return;
     // RTF 富文本视图与「合并文档」里都嵌着 .rtf-body；只认 .rtf 类会漏掉合并视图
-    if (!doc.querySelector('.rtf-body')) return;
-    if (DV.Settings.get().rtfReaderFont === false) return;
+    const hasRtf = !!doc.querySelector('.rtf-body');
+    const hasDocx = !!doc.querySelector('.docx-body');
+    if (!hasRtf && !hasDocx) return;
+    const allowRtf = DV.Settings.get().rtfReaderFont !== false;
     const spans = doc.querySelectorAll('[style*="color"]');
     if (!spans.length) return;
 
@@ -1157,13 +1164,18 @@ window.DV = window.DV || {};
 
     let fixed = 0;
     for (let i = 0; i < spans.length; i++) {
-      const f = rgbOf(getComputedStyle(spans[i]).color);
+      const el = spans[i];
+      const inDocx = !!(el.closest && el.closest('.docx-body'));
+      const inRtf = !!(el.closest && el.closest('.rtf-body'));
+      if (inRtf && !allowRtf) continue;           // 用户要求 RTF 保留文件自带配色
+      if (!inDocx && !inRtf) continue;
+      const f = rgbOf(getComputedStyle(el).color);
       if (!f) continue;
       const lf = lumOf(f);
       const ratio = (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05);
-      if (ratio < 3) { spans[i].style.color = ''; fixed++; }
+      if (ratio < 3) { el.style.color = ''; fixed++; }
     }
-    if (fixed) DV.Log.info('RTF 颜色适配：' + fixed + ' 处对比度过低，已回退为阅读器配色');
+    if (fixed) DV.Log.info('颜色适配：' + fixed + ' 处对比度过低，已回退为阅读器配色');
   }
 
   /* ================= 选择与显示 ================= */
@@ -1261,6 +1273,7 @@ window.DV = window.DV || {};
       paintedPlain = true;                 // 永远不会走写回，标成"非富文本"更安全
       if (item.kind === 'image') wireImageDoc(item);
       if (item.kind === 'pdf') observePdfPages(item);
+      fixReaderColors(doc);
       setMediaChrome(item);
       setupReveal();
       updateMediaInfo(item, t0);
@@ -1279,6 +1292,8 @@ window.DV = window.DV || {};
     paintedPlain = plainNow;
     // 字号
 
+    // Word / RTF 自带的文字颜色与阅读背景对比过低时，交还给阅读器配色
+    fixReaderColors(doc);
     const t1 = performance.now();
     // 文档滑入
     if (DV.Settings.get().anim !== 'off') {
@@ -2573,6 +2588,19 @@ window.__DV_NATIVE_FILES = function (paths) {
         flushEdits();                        // P1-14：关掉编辑开关前先落盘，别丢改动
         wantFocus = editable();
         applyEditMode();
+      }
+      if (keys && keys.indexOf('theme') >= 0) {
+        // 主题换了，颜色适配要按新的阅读底色重算 —— 重绘一次（颜色取自 item.html）
+        const it3 = active();
+        if (it3) paintDoc(it3, { keepScroll: true });
+      }
+      if (keys && keys.indexOf('docxReaderFont') >= 0) {
+        const it4 = active();
+        if (it4 && it4.kind === 'docx' && it4.rawBytes) {
+          it4.docxDone = false;
+          renderFile(it4);
+          paintDoc(it4, { keepScroll: true });
+        }
       }
       if (keys && keys.indexOf('lang') >= 0) { /* 文案由 rebuildForLang 处理 */ }
       if (keys && keys.indexOf('lang') >= 0 && DV.SettingsUI.rebuildForLang) {

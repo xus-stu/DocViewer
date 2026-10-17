@@ -111,6 +111,9 @@ DV.i18n = (function () {
     'RTF 使用阅读器字体、字号与配色': 'RTF uses the reader font, size and colors',
     '忽略文件自带的字体、字号；与背景对比过低的文字也会改用阅读器配色。不改动原文件。':
       'Ignore the font and size embedded in the file; text with too little contrast also switches to the reader palette. The original file is never modified.',
+    'Word 使用阅读器的字体与字号': 'Word uses the reader font and size',
+    '默认开启：标题层级保留，但正文不再套用文档自带的字体和字号， 所以每份 Word 看起来都跟其它文档一致。关掉则尽量还原文档本身的排版。 与背景对比过低的文字颜色始终会被换掉，免得看不见。':
+      'On by default: heading levels are kept, but body text no longer uses the fonts and sizes embedded in the document, so every Word file looks like the rest of the reader. Turn it off to follow the document layout as closely as possible. Colors with too little contrast against the background are always replaced so the text stays readable.',
     'RTF 按源文件换行': 'RTF honors source line breaks',
     '记住会话（下次打开恢复上次的文件）': 'Remember session (reopen last files)',
     '有些编辑器（如 macOS 文本编辑）导出的 RTF 用**裸换行**分段、不写': 'Some editors (e.g. macOS TextEdit) separate paragraphs with bare line breaks and write no',
@@ -394,6 +397,7 @@ DV.i18n = (function () {
     "源码": "Source",
     "记住会话：{state}": "Remember session: {state}",
     "RTF 字体：{state}": "RTF font: {state}",
+    "Word 字体：{state}": "Word font: {state}",
     "RTF 按源换行：{state}": "RTF source line breaks: {state}",
     "跟随阅读器": "Follow the reader",
     "使用文件自带": "Use the file’s own",

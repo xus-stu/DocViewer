@@ -94,6 +94,66 @@ window.DV = window.DV || {};
     throw new Error('不支持的压缩方式 ' + e.method + '：' + name);
   }
 
+  /* ==================== 内嵌图片 ==================== */
+
+  const B64CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+  function base64(bytes) {
+    const parts = [];
+    let chunk = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+      const b0 = bytes[i];
+      const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+      const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      chunk += B64CHARS[b0 >> 2] + B64CHARS[((b0 & 3) << 4) | (b1 >> 4)];
+      chunk += i + 1 < bytes.length ? B64CHARS[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+      chunk += i + 2 < bytes.length ? B64CHARS[b2 & 63] : '=';
+      if (chunk.length >= 8192) { parts.push(chunk); chunk = ''; }
+    }
+    parts.push(chunk);
+    return parts.join('');
+  }
+
+  const MEDIA_MIME = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    bmp: 'image/bmp', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff',
+    svg: 'image/svg+xml',
+  };
+  /** 单张内嵌图片的上限：超过就跳过（Word 里塞几百兆的图不是没有） */
+  const MEDIA_MAX = 12 * 1024 * 1024;
+
+  /** word/_rels/document.xml.rels → { rId: 'media/image1.png' } */
+  function readRels(tree) {
+    const out = Object.create(null);
+    (function walk(n) {
+      if (n.name === 'Relationship' && n.attrs && n.attrs.Id && n.attrs.Target) {
+        if ((n.attrs.TargetMode || '').toLowerCase() === 'external') return;   // 外链图片不联网取
+        let t = String(n.attrs.Target).replace(/^\//, '');
+        if (t.indexOf('word/') !== 0) t = 'word/' + t;
+        out[n.attrs.Id] = t;
+      }
+      n.children.forEach(walk);
+    })(tree);
+    return out;
+  }
+
+  /** 把 word/media/* 全部读成 data URL（文档里的图片一般不多，一次性读最省事） */
+  async function readMedia(bytes, dir) {
+    const out = Object.create(null);
+    const names = Object.keys(dir).filter(function (n) { return /^word\/media\//i.test(n); });
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      const mime = MEDIA_MIME[ext];
+      if (!mime) continue;                       // emf/wmf 这类浏览器画不了，跳过
+      const e = dir[name];
+      if (!e || e.size > MEDIA_MAX) continue;
+      const raw = await readEntry(bytes, dir, name);
+      out[name] = 'data:' + mime + ';base64,' + base64(raw);
+    }
+    return out;
+  }
+
   /* ==================== 极简 XML ==================== */
 
   const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
@@ -188,7 +248,39 @@ window.DV = window.DV || {};
     return 0;
   }
 
+  /** 渲染上下文：图片关系表、媒体数据、是否沿用文档自带字体 */
+  const CTX = { rels: null, media: null, keepFonts: false, images: 0 };
+
+  /** 一个 run 里可能挂着的图片（DrawingML 或老式 VML） */
+  function runImageHtml(r) {
+    if (!CTX.media) return '';
+    let rid = '';
+    const blip = deep(r, 'a:blip');
+    if (blip) rid = blip.attrs['r:embed'] || blip.attrs['r:link'] || '';
+    if (!rid) {
+      const vml = deep(r, 'v:imagedata');
+      if (vml) rid = vml.attrs['r:id'] || '';
+    }
+    if (!rid) return '';
+    const target = CTX.rels && CTX.rels[rid];
+    const url = target && CTX.media[target];
+    if (!url) return '';
+    // wp:extent 的单位是 EMU，1 px = 9525 EMU
+    let w = 0, h = 0;
+    const ext = deep(r, 'wp:extent');
+    if (ext) {
+      w = Math.round(parseInt(ext.attrs.cx, 10) / 9525) || 0;
+      h = Math.round(parseInt(ext.attrs.cy, 10) / 9525) || 0;
+    }
+    if (!w || w > 4000) w = 0;                   // 尺寸离谱就当自适应
+    CTX.images++;
+    const style = w ? ' style="width:' + w + 'px' + (h ? ';height:' + h + 'px' : ';height:auto') + '"' : '';
+    return '<img class="docx-img" src="' + url + '" alt=""' + style + '>';
+  }
+
   function inlineOfRun(r) {
+    const img = runImageHtml(r);
+    if (img) return img;
     let txt = '';
     r.children.forEach(function (c) {
       if (c.name === 'w:t') txt += c.text;
@@ -211,22 +303,29 @@ window.DV = window.DV || {};
       if (va && va.attrs['w:val'] === 'superscript') txt = '<sup>' + txt + '</sup>';
       if (va && va.attrs['w:val'] === 'subscript') txt = '<sub>' + txt + '</sub>';
       const color = deep(rPr, 'w:color');
-      if (color && color.attrs['w:val'] && !/^auto$/i.test(color.attrs['w:val'])) {
+      // w:themeColor 表示"跟随主题色"，Word 会同时写一个 w:val 兜底值
+      // （通常就是 000000）。照那个值上色，深色主题下正文就变成黑底黑字了。
+      const themed = color && (color.attrs['w:themeColor'] || color.attrs['w:themeShade']);
+      if (color && !themed && color.attrs['w:val'] && !/^auto$/i.test(color.attrs['w:val'])) {
         css.push('color:#' + color.attrs['w:val'].replace(/[^0-9a-f]/gi, '').slice(0, 6).toLowerCase());
       }
       const hl = deep(rPr, 'w:highlight');
       if (hl && hl.attrs['w:val'] && hl.attrs['w:val'] !== 'none') {
         css.push('background-color:' + hlName(hl.attrs['w:val']));
+        // 高亮是浅底色，字色必须压深，否则深色主题下会"浅字浅底"
+        css.push('color:#1b1b1b');
       }
-      const sz = deep(rPr, 'w:sz');
-      if (sz && sz.attrs['w:val']) {
-        const half = parseInt(sz.attrs['w:val'], 10);
-        if (half > 0 && half !== 24) css.push('font-size:' + (half / 2) + 'pt');
-      }
-      const fonts = deep(rPr, 'w:rFonts');
-      if (fonts && (fonts.attrs['w:ascii'] || fonts.attrs['w:eastAsia'])) {
-        const family = (fonts.attrs['w:eastAsia'] || fonts.attrs['w:ascii']).replace(/"/g, '');
-        css.push('font-family:"' + family + '",inherit');
+      if (CTX.keepFonts) {
+        const sz = deep(rPr, 'w:sz');
+        if (sz && sz.attrs['w:val']) {
+          const half = parseInt(sz.attrs['w:val'], 10);
+          if (half > 0 && half !== 24) css.push('font-size:' + (half / 2) + 'pt');
+        }
+        const fonts = deep(rPr, 'w:rFonts');
+        if (fonts && (fonts.attrs['w:ascii'] || fonts.attrs['w:eastAsia'])) {
+          const family = (fonts.attrs['w:eastAsia'] || fonts.attrs['w:ascii']).replace(/"/g, '');
+          css.push('font-family:"' + family + '",inherit');
+        }
       }
     } else {
       txt = esc(txt);
@@ -355,7 +454,8 @@ window.DV = window.DV || {};
    * 解析 .docx
    * @returns {{ok:boolean, html:string, paragraphs:number, tables:number, warnings:string[]}}
    */
-  async function renderDocx(bytes) {
+  async function renderDocx(bytes, opts) {
+    opts = opts || {};
     const warnings = [];
     const d = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const dir = readZipDirectory(d);
@@ -365,20 +465,36 @@ window.DV = window.DV || {};
     const xmlBytes = await readEntry(d, dir, main);
     const xml = utf8(xmlBytes);
     const tree = parseXml(xml);
+
+    // 图片：关系表 + 媒体字节 → data URL；老式 .doc 转过来的文档没有这些，直接空表
+    CTX.keepFonts = !!opts.keepFonts;
+    CTX.images = 0;
+    CTX.media = null;
+    CTX.rels = Object.create(null);
+    const relsName = names.filter(function (n) { return /^word\/_rels\/document\.xml\.rels$/i.test(n); })[0];
+    if (relsName) {
+      try {
+        CTX.rels = readRels(parseXml(utf8(await readEntry(d, dir, relsName))));
+      } catch (e) { CTX.rels = Object.create(null); }
+    }
+    if (names.some(function (n) { return /^word\/media\//i.test(n); })) {
+      CTX.media = await readMedia(d, dir);
+      const skipped = names.filter(function (n) { return /^word\/media\//i.test(n); }).length -
+        Object.keys(CTX.media).length;
+      if (skipped > 0) warnings.push('有 ' + skipped + ' 张图片的格式浏览器画不出来（EMF/WMF 等），已跳过');
+    }
+
     const doc = deep(tree, 'w:document');
     const body = doc && child(doc, 'w:body');
     if (!body) throw new Error('document.xml 结构不认识');
     const html = bodyHtml(body);
     const paragraphs = (xml.match(/<w:p[\s>]/g) || []).length;
     const tables = (xml.match(/<w:tbl[\s>]/g) || []).length;
-    if (names.some(function (n) { return /^word\/media\//i.test(n); })) {
-      warnings.push('文档里有图片，预览时不显示');
-    }
     if (names.some(function (n) { return /^word\/footnotes\.xml$/i.test(n); })) {
       warnings.push('脚注不显示');
     }
     return { ok: true, html: '<div class="docx-body">' + html + '</div>',
-      paragraphs: paragraphs, tables: tables, warnings: warnings };
+      paragraphs: paragraphs, tables: tables, images: CTX.images, warnings: warnings };
   }
 
   /** 只要文档里的纯文本（用于搜索 / 字数统计 / 复制） */

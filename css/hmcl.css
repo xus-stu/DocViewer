@@ -1302,3 +1302,10 @@ body[data-edit="on"] .doc { cursor: text; }
 
 /* Pages 的内嵌预览图是整页位图 */
 .pages-preview .docview-img, .ql-preview .docview-img { cursor: default; background: #fff; }
+
+/* Word 里内嵌的图片 */
+.docx-img {
+  max-width: 100%; height: auto;
+  display: inline-block; vertical-align: middle;
+  margin: .3em 0; border-radius: 4px;
+}
