@@ -473,6 +473,7 @@ DV.i18n = (function () {
     "这一份预览不了": "This file could not be previewed",
     "文件本身没有被改动，可以换用其它软件打开。": "The file itself was not modified; open it in another app instead.",
     "需要重新打开这个文件才能预览": "Re-open this file to preview it",
+    "这份文件是拖进窗口打开的，没有本地路径，重启后无法恢复。用「打开文件」或「导入文件夹」重新打开它，之后就能记住。": "This file was dropped onto the window, so it has no local path and cannot be restored after a restart. Open it again with \"Open files\" or \"Import folder\" and it will be remembered.",
     "浏览器里打开的文件没有可用的本地路径": "A file opened in the browser has no local path to read",
     "浏览器里打开的图片没有可用的地址": "The image opened in the browser has no usable address",
     "点图片在「适应窗口」和「原始大小」之间切换": "Click the image to switch between fit-to-window and actual size",

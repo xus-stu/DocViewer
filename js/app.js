@@ -306,6 +306,11 @@ window.DV = window.DV || {};
     if (active() === item) paintDoc(item, { keepScroll: true });
   }
 
+  /** 拖进窗口 / 浏览器里打开的文件只有内存里的 File，没有本地路径，重启后拿不到内容 */
+  function noPathReason() {
+    return DV.t('这份文件是拖进窗口打开的，没有本地路径，重启后无法恢复。用「打开文件」或「导入文件夹」重新打开它，之后就能记住。');
+  }
+
   function mediaFailed(item, why) {
     item.html = mediaErrorHtml(why);
     item.text = '';
@@ -318,8 +323,8 @@ window.DV = window.DV || {};
   /** 二进制条目：字节不在内存里时（会话恢复）按路径重新读一次 */
   function loadBinaryBytes(item) {
     if (item.rawBytes) return;
-    if (!item.fullPath) { mediaFailed(item, DV.t('需要重新打开这个文件才能预览')); return; }
-    if (!nativeBridge()) { mediaFailed(item, DV.t('浏览器里打开的文件没有可用的本地路径')); return; }
+    if (!item.fullPath) { mediaFailed(item, noPathReason()); return; }
+    if (!nativeBridge()) { mediaFailed(item, noPathReason()); return; }
     fetchWithTimeout(DV.localUrl(item.fullPath), 30000).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.arrayBuffer();
@@ -351,7 +356,7 @@ window.DV = window.DV || {};
       if (item.fullPath && nativeBridge()) item.srcUrl = DV.localUrl(item.fullPath);
       else if (item.rawBytes) item.srcUrl = bytesToDataUrl(item.rawBytes, 'image/' + (DV.ext(item.name) || 'png'));
     }
-    if (!item.srcUrl) { mediaFailed(item, DV.t('浏览器里打开的图片没有可用的地址')); return; }
+    if (!item.srcUrl) { mediaFailed(item, noPathReason()); return; }
     item.text = '';
     item.lines = 0;
     item.chars = 0;
@@ -407,10 +412,11 @@ window.DV = window.DV || {};
     item.text = '';
     item.lines = 0;
     item.chars = 0;
-    if (!nativeBridge() || !item.fullPath) {
+    if (!nativeBridge()) {
       item.html = mediaErrorHtml(DV.t('PDF 预览需要桌面版（浏览器页面拿不到 PDF 渲染能力）'));
       return;
     }
+    if (!item.fullPath) { item.html = mediaErrorHtml(noPathReason()); return; }
     if (!item.pdfCount) {
       item.html = mediaStateHtml(DV.t('正在读取 PDF…'));
       requestPdfPage(item, 1);
